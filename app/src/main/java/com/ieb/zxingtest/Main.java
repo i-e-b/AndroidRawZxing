@@ -12,7 +12,6 @@ import android.widget.TextView;
 
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.RGBLuminanceSource;
-import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
 
@@ -64,7 +63,6 @@ public class Main extends Activity
             var image = new RGBLuminanceSource(w,h, pixels);
 
             // Threshold down to a black&white image
-            //var thresholder = new GlobalHistogramBinarizer(image); // faster, but not as robust
             var thresholder = new HybridBinarizer(image);
             var binMap = new BinaryBitmap(thresholder);
 
