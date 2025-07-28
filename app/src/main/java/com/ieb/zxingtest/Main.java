@@ -11,6 +11,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.google.zxing.BinaryBitmap;
+import com.google.zxing.LuminanceSource;
 import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
@@ -22,6 +23,7 @@ public class Main extends Activity
     private CameraController camControl;
     private AutoFitTextureView previewTexture;
     private TextView text;
+    private boolean shouldInvert = false;
 
     private volatile boolean updateInProgress;
 
@@ -54,13 +56,14 @@ public class Main extends Activity
             return;
         }
 
+
         try {
             // Transfer to ZXing format
             int w = bitmap.getWidth();
             int h = bitmap.getHeight();
             var pixels = new int[w*h];
             bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
-            var image = new RGBLuminanceSource(w,h, pixels);
+            var image = maybeInvert(new RGBLuminanceSource(w,h, pixels));
 
             // Threshold down to a black&white image
             var thresholder = new HybridBinarizer(image);
@@ -80,6 +83,13 @@ public class Main extends Activity
             // If the capture is blurry or not at a good angle, we probably get a checksum error here.
             Log.w(TAG, "Could not read bar-code: "+e);
         }
+    }
+
+    /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
+    private LuminanceSource maybeInvert(RGBLuminanceSource source) {
+        shouldInvert = !shouldInvert;
+        if (shouldInvert) return source.invert();
+        return source;
     }
 
     /** Try to read a QR code from the current texture */
