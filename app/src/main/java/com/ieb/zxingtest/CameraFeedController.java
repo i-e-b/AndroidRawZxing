@@ -42,20 +42,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** @noinspection NullableProblems*/
-public class CameraController {
+public class CameraFeedController {
     private final Activity activity;
 
     /**
      * Set up camera control
      * @param main Hosting activity
-     * @param view preview output
+     * @param view preview output (captured image will match the size of this)
+     * @param updateTrigger trigger to call when a frame is captured
      */
-    public CameraController(Activity main, AutoFitTextureView view, Consumer<SurfaceTexture> updateTrigger) {
+    public CameraFeedController(Activity main, TextureView view, Consumer<SurfaceTexture> updateTrigger) {
         activity = main;
         mTextureView = view;
         this.updateTrigger = updateTrigger;
     }
-
 
     /**
      * Conversion from screen rotation to JPEG orientation.
@@ -103,12 +103,12 @@ public class CameraController {
     /**
      * Max preview width that is guaranteed by Camera2 API
      */
-    private static final int MAX_PREVIEW_WIDTH = 1920;
+    public static final int MAX_PREVIEW_WIDTH = 1920;
 
     /**
      * Max preview height that is guaranteed by Camera2 API
      */
-    private static final int MAX_PREVIEW_HEIGHT = 1080;
+    public static final int MAX_PREVIEW_HEIGHT = 1080;
 
     /**
      * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a
@@ -119,7 +119,7 @@ public class CameraController {
 
         @Override
         public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
-            openCamera(width, height);
+            openCamera(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT);//width, height);
         }
 
         @Override
@@ -148,7 +148,7 @@ public class CameraController {
     /**
      * An  AutoFitTextureView for camera preview.
      */
-    private final AutoFitTextureView mTextureView;
+    private final TextureView mTextureView;
     private final Consumer<SurfaceTexture> updateTrigger;
 
     /**
@@ -162,7 +162,7 @@ public class CameraController {
     private CameraDevice mCameraDevice;
 
     /**
-     * The {@link android.util.Size} of camera preview.
+     * The {@link Size} of camera preview.
      */
     private Size mPreviewSize;
 
@@ -493,13 +493,14 @@ public class CameraController {
                         maxPreviewHeight, largest);
 
                 // We fit the aspect ratio of TextureView to the size of preview we picked.
-                int orientation = activity.getResources().getConfiguration().orientation;
-                if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                    mTextureView.setAspectRatio(
-                            mPreviewSize.getWidth(), mPreviewSize.getHeight());
-                } else {
-                    mTextureView.setAspectRatio(
-                            mPreviewSize.getHeight(), mPreviewSize.getWidth());
+                if (mTextureView instanceof AutoFitTextureView){
+                    var autoView = (AutoFitTextureView) mTextureView;
+                    int orientation = activity.getResources().getConfiguration().orientation;
+                    if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                        autoView.setAspectRatio(mPreviewSize.getWidth(), mPreviewSize.getHeight());
+                    } else {
+                        autoView.setAspectRatio(mPreviewSize.getHeight(), mPreviewSize.getWidth());
+                    }
                 }
 
                 // Check if the flash is supported.
@@ -650,7 +651,7 @@ public class CameraController {
     }
 
     /**
-     * Configures the necessary {@link android.graphics.Matrix} transformation to `mTextureView`.
+     * Configures the necessary {@link Matrix} transformation to `mTextureView`.
      * This method should be called after the camera preview size is determined in
      * setUpCameraOutputs and also the size of `mTextureView` is fixed.
      *

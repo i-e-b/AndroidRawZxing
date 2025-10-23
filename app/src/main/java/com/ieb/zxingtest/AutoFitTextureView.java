@@ -9,7 +9,7 @@ import android.view.TextureView;
 import android.view.View;
 
 public class AutoFitTextureView extends TextureView {
-    private final String TAG = "CamView";
+    private final String TAG = "CamViewTex";
     private int mRatioWidth = 0;
     private int mRatioHeight = 0;
 

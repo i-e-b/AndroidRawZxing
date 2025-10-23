@@ -5,31 +5,44 @@ import static android.widget.LinearLayout.VERTICAL;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
+import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.TextureView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
+import com.google.zxing.NotFoundException;
 import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
+import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
 
 /** @noinspection NullableProblems*/
 public class Main extends Activity
 {
     private final String TAG = "MainAct";
-    private CameraController camControl;
-    private AutoFitTextureView previewTexture;
+    private CameraFeedController camControl;
+    private TextureView cameraViewer;
+    private ImageView thresholdViewer;
     private TextView text;
+
     private boolean shouldInvert = false;
 
     private volatile boolean updateInProgress;
+    private QRCodeReader qrReader;
+    private Code128Reader code128Reader;
 
     @Override
     protected void onCreate(Bundle bundle) {
         super.onCreate(bundle);
+
+
+        qrReader = new QRCodeReader();
+        code128Reader = new Code128Reader();
 
         // Setup layout
         updateInProgress = false;
@@ -38,11 +51,19 @@ public class Main extends Activity
         setContentView(root);
 
         text = new TextView(this);
-        previewTexture = new AutoFitTextureView(this);
-        camControl = new CameraController(this, previewTexture, surfaceTexture -> updateReading());
+        cameraViewer = new AutoFitTextureView(this);
+        //cameraViewer = new TextureView();
+
+        //var test = new SurfaceTexture(true);
+        //test.setDefaultBufferSize(CameraPreviewController.MAX_PREVIEW_WIDTH, CameraPreviewController.MAX_PREVIEW_HEIGHT);
+        //cameraViewer.setSurfaceTexture(test);
+
+        thresholdViewer = new ImageView(this);
+        camControl = new CameraFeedController(this, cameraViewer, surfaceTexture -> updateReading());
 
         root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
-        root.addView(previewTexture, new LinearLayout.LayoutParams(MATCH_PARENT, 0,2));
+        root.addView(cameraViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
+        root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
 
         text.append("\r\nRunning test. Point camera at a QR code...");
 
@@ -50,28 +71,15 @@ public class Main extends Activity
         camControl.onResume();
     }
 
-    private void tryToFindQrCodeInBitmap(Bitmap bitmap) {
-        if (bitmap == null) {
-            Log.w(TAG, "Invalid bitmap");
+    private void tryToFindQrCodeInBitmap(BinaryBitmap binMap) {
+        if (binMap == null) {
+            Log.w(TAG, "Invalid binMap");
             return;
         }
 
-
         try {
-            // Transfer to ZXing format
-            int w = bitmap.getWidth();
-            int h = bitmap.getHeight();
-            var pixels = new int[w*h];
-            bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
-            var image = maybeInvert(new RGBLuminanceSource(w,h, pixels));
-
-            // Threshold down to a black&white image
-            var thresholder = new HybridBinarizer(image);
-            var binMap = new BinaryBitmap(thresholder);
-
-            // Try to read the QR code image
-            var reader = new QRCodeReader();
-            var result = reader.decode(binMap);
+            qrReader.reset();
+            var result = qrReader.decode(binMap);
 
             text.setText("\r\nFound QR code");
             text.append("\r\nBar code result: " + result.toString());
@@ -85,10 +93,32 @@ public class Main extends Activity
         }
     }
 
+    private void tryToFind128CodeInBitmap(BinaryBitmap binMap) {
+        if (binMap == null) {
+            Log.w(TAG, "Invalid binMap");
+            return;
+        }
+
+        try {
+            code128Reader.reset();
+            var result = code128Reader.decode(binMap);
+
+            text.setText("\r\nFound 128 code");
+            text.append("\r\nBar code result: " + result.toString());
+            text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
+
+        } catch (com.google.zxing.NotFoundException nf) {
+            // No QR code found. This is fine
+        } catch (Exception e) {
+            // If the capture is blurry or not at a good angle, we probably get a checksum error here.
+            Log.w(TAG, "Could not read bar-code: "+e);
+        }
+    }
+
     /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
     private LuminanceSource maybeInvert(RGBLuminanceSource source) {
-        shouldInvert = !shouldInvert;
-        if (shouldInvert) return source.invert();
+       /* shouldInvert = !shouldInvert;
+        if (shouldInvert) return source.invert();*/
         return source;
     }
 
@@ -102,19 +132,65 @@ public class Main extends Activity
 
         Bitmap bitmap = null;
         try {
-            bitmap = previewTexture.getBitmap();
+            bitmap = cameraViewer.getBitmap();
             if (bitmap == null){
                 Log.w(TAG, "Failed to read texture bmp");
                 return;
             }
 
-            tryToFindQrCodeInBitmap(bitmap);
+            var binMap = getBinMap(bitmap);
+            if (binMap == null) return;
+
+            updateThresholdPreview(binMap);
+
+            //tryToFindQrCodeInBitmap(binMap);
+            tryToFind128CodeInBitmap(binMap);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to get bitmap: " + t);
         } finally {
             if (bitmap != null) bitmap.recycle();
             updateInProgress = false;
         }
+    }
+
+    private void updateThresholdPreview(BinaryBitmap binMap) {
+        Bitmap.Config config = Bitmap.Config.RGB_565;
+        Bitmap bitmap = null;
+        try {
+            bitmap = Bitmap.createBitmap(binMap.getBlackMatrix().toColorInts(), binMap.getWidth(), binMap.getHeight(), config);
+        } catch (NotFoundException e) {
+            Log.e(TAG, "Failure in bin-map preview", e);
+        }
+
+        thresholdViewer.setImageBitmap(bitmap);
+    }
+
+    /** Factor used to zoom in to image. This helps with badly printed codes */
+    private double scaleFactor = 0.0;
+
+    private BinaryBitmap getBinMap(Bitmap bitmap) {
+        if (bitmap == null) return null;
+
+        try {
+            // Transfer to ZXing format
+            int w = bitmap.getWidth();
+            int h = bitmap.getHeight();
+
+            var pixels = new int[w*h];
+            bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
+            var image = maybeInvert(new RGBLuminanceSource(w,h, pixels));
+
+            image = image.crop(32,32, w-64, h-64);
+
+            // Threshold down to a black&white image
+            var thresholder = new HybridBinarizer(image);
+            //var thresholder = new GlobalHistogramBinarizer(image);
+
+            return new BinaryBitmap(thresholder);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not read bitmap image: "+e);
+        }
+        return null;
     }
 
 
