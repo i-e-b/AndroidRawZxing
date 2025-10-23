@@ -5,8 +5,6 @@ import static android.widget.LinearLayout.VERTICAL;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
-import android.graphics.ImageFormat;
-import android.graphics.Rect;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Bundle;
@@ -20,13 +18,10 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
-import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
-
-import java.nio.ByteBuffer;
 
 /** @noinspection NullableProblems*/
 public class Main extends Activity
@@ -134,25 +129,16 @@ public class Main extends Activity
         return source;
     }
 
-    /** Try to read a QR code from the current texture */
-    private void updateReading(ImageReader reader) {
-        if (updateInProgress) {
-            return; // QR scanner is not keeping up with camera preview rate. Not really a problem.
-        }
-        updateInProgress = true;
-
-
-        Image image = null;
-        try {
-            //image = reader.acquireLatestImage();
-            image = reader.acquireNextImage();
-            if (image == null) return;
+    private byte[] imageToBytes(ImageReader reader) {
+        try (Image image = reader.acquireNextImage()) {
+        //try (Image image = reader.acquireLatestImage()) {
+            if (image == null) return null;
 
             var planes = image.getPlanes();
 
-            if (planes == null || planes.length < 3){
+            if (planes == null || planes.length < 1) {
                 Log.w(TAG, "Invalid image planes");
-                return;
+                return null;
             }
 
             var yPlane = planes[0];
@@ -164,11 +150,47 @@ public class Main extends Activity
             var imgHeight = image.getHeight();
             var dataWidth = yPlane.getRowStride();
 
-            updateLumPreview(data, dataWidth, imgWidth, imgHeight);
+            var result = new byte[imgWidth * imgHeight];
 
-            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(data, dataWidth, imgHeight, 0, 0, imgWidth, imgHeight, false);
+            int j = 0;
+            for (int y = 0; y < imgHeight; y++) {
+                var yOff = dataWidth * y;
+                for (int x = 0; x < imgWidth; x++) {
+                    var idx = yOff + x;
+                    result[j++] = data[idx];
+                    //var sample = data[idx] & 0xFF;
+                    //var color = 0x00_01_01_01 * sample;
+                    //colorInts[j++] = 0xFF000000 + color;
+                }
+            }
+            return result;
+        }
+    }
 
-            var binMap = getBinMap(lum);
+    /** Try to read a QR code from the current texture */
+    private void updateReading(ImageReader reader) {
+        if (updateInProgress) {
+            return; // QR scanner is not keeping up with camera preview rate. Not really a problem.
+        }
+        updateInProgress = true;
+
+
+        try {
+            var imgHeight = reader.getHeight();
+            var imgWidth = reader.getWidth();
+
+            var image = imageToBytes(reader);
+            if (image == null) return;
+
+            //image = convolution3x3(image, imgWidth, imgHeight, conv_blur);
+            //image = convolution3x3(image, imgWidth, imgHeight, conv_v_blur);
+            blurSharpen(image, imgWidth, imgHeight);
+
+            updateLumPreview(image, imgWidth, imgHeight);
+
+            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(image, imgWidth, imgHeight, 128, 128, imgWidth-256, imgHeight-256, false);
+
+            var binMap = convertToBinaryMap(lum);
 
             if (binMap == null) return;
 
@@ -179,28 +201,107 @@ public class Main extends Activity
         } catch (Throwable t) {
             Log.e(TAG, "Failed to read camera capture: " + t);
         } finally {
-            if (image != null) image.close();
             updateInProgress = false;
         }
+    }
+
+    /** Blur vertically, sharpen horizontally */
+
+    private void blurSharpen(byte[] image, int width, int height) {
+        int margin = 2;
+        for (int y = margin; y < height-margin; y++) {
+            var yOff = y * width;
+            for (int x = margin; x < width-margin; x++) {
+                var idx = yOff + x;
+
+                var b1 = image[idx + width] & 0xFF;
+                var b2 = image[idx + width + width] & 0xFF;
+                //var r1 = image[idx + 1] & 0xFF;
+                //var r2 = image[idx + 2] & 0xFF;
+                var c = image[idx] & 0xFF;
+
+                var n = (b1+b2+c)/3;// - r1 - r2;
+
+                image[idx] = pin(n); // feedback to strengthen effect
+            }
+        }
+    }
+
+    private static final int[] conv_edge = {
+            1,
+            -1, -1, -1,
+            -1,  8, -1,
+            -1, -1, -1
+    };
+    private static final int[] conv_ridge = {
+            1,
+             0, -1,  0,
+            -1,  4, -1,
+             0, -1,  0
+    };
+    private static final int[] conv_sharpen = {
+            1,
+            -1, -2, -1,
+            -2, 13, -2,
+            -1, -2, -1
+    };
+    private static final int[] conv_blur= {
+            16,
+             1,  2,  1,
+             2,  4, 2,
+             1,  2,  1
+    };
+    private static final int[] conv_v_blur= {
+            3,
+            0,  1,  0,
+            0,  1,  0,
+            0,  1,  0
+    };
+
+    /** Experiments trying to improve capture */
+    private byte[] convolution3x3(byte[] image, int width, int height, int[] factors) {
+        var result = new byte[image.length];
+        for (int y = 1; y < height-1; y++) {
+            var yOff = y * width;
+            for (int x = 1; x < width-1; x++) {
+                var idx = yOff + x;
+
+                var sample = 0;
+                var dy = -width;
+                var f = 1;
+                for (int cy = 0; cy < 3; cy++) {
+                    var dx = -1;
+                    for (int cx = 0; cx < 3; cx++) {
+                        sample += (image[idx + dy + dx] & 0xFF) * factors[f];
+                        f++;
+                    }
+                    dy += width;
+                }
+
+                result[idx] = pin(sample / factors[0]);
+            }
+        }
+        return result;
+    }
+
+    private byte pin(int v) {
+        if (v < 0) return 0;
+        if (v > 255) return (byte)255;
+        return (byte) v;
     }
 
     Bitmap prevLumBitmap = null;
 
     /** Show a greyscale preview of the camera luminance */
-    private void updateLumPreview(byte[] lumMap, int dataWidth, int width, int height) {
+    private void updateLumPreview(byte[] lumMap, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
         var colorInts = new int[lumMap.length];
 
-        int j = 0;
-        for (int y = 0; y < height; y++) {
-            var yOff = dataWidth * y;
-            for (int x = 0; x < width; x++) {
-                var idx = yOff + x;
-                var sample = lumMap[idx] & 0xFF;
-                var color = 0x00_01_01_01 * sample;
-                colorInts[j++] = 0xFF000000 + color;
-            }
+        for (int i = 0; i < lumMap.length; i++) {
+            var sample = lumMap[i] & 0xFF;
+            var color = 0x00_01_01_01 * sample;
+            colorInts[i] = 0xFF000000 + color;
         }
 
         Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
@@ -237,34 +338,8 @@ public class Main extends Activity
         prevThreshBitmap = bitmap;
     }
 
-    /** Factor used to zoom in to image. This helps with badly printed codes */
-    private double scaleFactor = 0.0;
 
-
-    private BinaryBitmap getBinMap(Bitmap bitmap) {
-        if (bitmap == null) return null;
-
-        try {
-            // Transfer to ZXing format
-            int w = bitmap.getWidth();
-            int h = bitmap.getHeight();
-
-            var pixels = new int[w*h];
-            bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
-            var image = maybeInvert(new RGBLuminanceSource(w,h, pixels));
-
-            // Threshold down to a black&white image
-            var thresholder = new HybridBinarizer(image);
-            //var thresholder = new GlobalHistogramBinarizer(image);
-
-            return new BinaryBitmap(thresholder);
-        } catch (Exception e) {
-            Log.w(TAG, "Could not read bitmap image: "+e);
-        }
-        return null;
-    }
-
-    private BinaryBitmap getBinMap(LuminanceSource bitmap) {
+    private BinaryBitmap convertToBinaryMap(LuminanceSource bitmap) {
         if (bitmap == null) return null;
 
         try {
