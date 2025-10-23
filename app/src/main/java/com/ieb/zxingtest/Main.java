@@ -5,7 +5,10 @@ import static android.widget.LinearLayout.VERTICAL;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
-import android.graphics.SurfaceTexture;
+import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.media.Image;
+import android.media.ImageReader;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.TextureView;
@@ -16,10 +19,14 @@ import android.widget.TextView;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.NotFoundException;
+import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.RGBLuminanceSource;
+import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
+
+import java.nio.ByteBuffer;
 
 /** @noinspection NullableProblems*/
 public class Main extends Activity
@@ -28,6 +35,7 @@ public class Main extends Activity
     private CameraFeedController camControl;
     private TextureView cameraViewer;
     private ImageView thresholdViewer;
+    private ImageView luminanceViewer;
     private TextView text;
 
     private boolean shouldInvert = false;
@@ -51,18 +59,20 @@ public class Main extends Activity
         setContentView(root);
 
         text = new TextView(this);
-        cameraViewer = new AutoFitTextureView(this);
+        //cameraViewer = new AutoFitTextureView(this);
         //cameraViewer = new TextureView();
 
         //var test = new SurfaceTexture(true);
         //test.setDefaultBufferSize(CameraPreviewController.MAX_PREVIEW_WIDTH, CameraPreviewController.MAX_PREVIEW_HEIGHT);
         //cameraViewer.setSurfaceTexture(test);
 
+        luminanceViewer = new ImageView(this);
         thresholdViewer = new ImageView(this);
-        camControl = new CameraFeedController(this, cameraViewer, surfaceTexture -> updateReading());
+        camControl = new CameraFeedController(this, reader -> updateReading(reader));
 
         root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
-        root.addView(cameraViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
+        //root.addView(cameraViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
+        root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
         root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
 
         text.append("\r\nRunning test. Point camera at a QR code...");
@@ -81,10 +91,11 @@ public class Main extends Activity
             qrReader.reset();
             var result = qrReader.decode(binMap);
 
-            text.setText("\r\nFound QR code");
-            text.append("\r\nBar code result: " + result.toString());
-            text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
-
+            runOnUiThread(() -> {
+                text.setText("\r\nFound QR code");
+                text.append("\r\nBar code result: " + result.toString());
+                text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
+            });
         } catch (com.google.zxing.NotFoundException nf) {
             // No QR code found. This is fine
         } catch (Exception e) {
@@ -103,10 +114,11 @@ public class Main extends Activity
             code128Reader.reset();
             var result = code128Reader.decode(binMap);
 
-            text.setText("\r\nFound 128 code");
-            text.append("\r\nBar code result: " + result.toString());
-            text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
-
+            runOnUiThread(() -> {
+                text.setText("\r\nFound 128 code");
+                text.append("\r\nBar code result: " + result.toString());
+                text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
+            });
         } catch (com.google.zxing.NotFoundException nf) {
             // No QR code found. This is fine
         } catch (Exception e) {
@@ -116,14 +128,14 @@ public class Main extends Activity
     }
 
     /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
-    private LuminanceSource maybeInvert(RGBLuminanceSource source) {
-       /* shouldInvert = !shouldInvert;
+    private LuminanceSource maybeInvert(LuminanceSource source) {
+        /*shouldInvert = !shouldInvert;
         if (shouldInvert) return source.invert();*/
         return source;
     }
 
     /** Try to read a QR code from the current texture */
-    private void updateReading() {
+    private void updateReading(ImageReader reader) {
         if (updateInProgress) {
             return; // QR scanner is not keeping up with camera preview rate. Not really a problem.
         }
@@ -131,14 +143,38 @@ public class Main extends Activity
 
 
         Bitmap bitmap = null;
+        Image image = null;
         try {
-            bitmap = cameraViewer.getBitmap();
-            if (bitmap == null){
-                Log.w(TAG, "Failed to read texture bmp");
+            //image = reader.acquireLatestImage();
+            image = reader.acquireNextImage();
+            if (image == null) return;
+
+            //final ByteBuffer yuvBytes = this.imageToByteBuffer(image);
+            //Log.i(TAG, "Got image "+yuvBytes.get(0));
+            var planes = image.getPlanes();
+
+            if (planes == null || planes.length < 3){
+                Log.w(TAG, "Invalid image planes");
                 return;
             }
 
-            var binMap = getBinMap(bitmap);
+            var yPlane = planes[0];
+            var buffer = yPlane.getBuffer();
+            byte[] data = new byte[buffer.remaining()];
+            buffer.get(data);
+
+            var imgWidth = image.getWidth();
+            var imgHeight = image.getHeight();
+            var dataWidth = yPlane.getRowStride();
+
+            updateLumPreview(data, dataWidth, imgWidth, imgHeight);
+
+            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(data, dataWidth, imgHeight, 0, 0, imgWidth, imgHeight, false);
+            //updateLumPreview(lum.renderThumbnail(), imgWidth, imgHeight);
+
+            //var binMap = getBinMap(prevLumBitmap);
+            var binMap = getBinMap(lum);
+
             if (binMap == null) return;
 
             updateThresholdPreview(binMap);
@@ -149,10 +185,124 @@ public class Main extends Activity
             Log.e(TAG, "Failed to get bitmap: " + t);
         } finally {
             if (bitmap != null) bitmap.recycle();
+            if (image != null) image.close();
             updateInProgress = false;
         }
     }
 
+    /** Convert a YUV_420_888 image into a YUV interleaved buffer */
+    private ByteBuffer imageToByteBuffer(final Image image)
+    {
+        final Rect crop   = image.getCropRect();
+        final int  width  = crop.width();
+        final int  height = crop.height();
+
+        final Image.Plane[] planes     = image.getPlanes();
+        final byte[]        rowData    = new byte[planes[0].getRowStride()];
+        final int           bufferSize = width * height * ImageFormat.getBitsPerPixel(ImageFormat.YUV_420_888) / 8;
+        final ByteBuffer    output     = ByteBuffer.allocateDirect(bufferSize);
+
+        int channelOffset = 0;
+        int outputStride = 0;
+
+        for (int planeIndex = 0; planeIndex < 3; planeIndex++)
+        {
+            if (planeIndex == 0)
+            {
+                channelOffset = 0;
+                outputStride = 1;
+            }
+            else if (planeIndex == 1)
+            {
+                channelOffset = width * height + 1;
+                outputStride = 2;
+            }
+            else if (planeIndex == 2)
+            {
+                channelOffset = width * height;
+                outputStride = 2;
+            }
+
+            final ByteBuffer buffer      = planes[planeIndex].getBuffer();
+            final int        rowStride   = planes[planeIndex].getRowStride();
+            final int        pixelStride = planes[planeIndex].getPixelStride();
+
+            final int shift         = (planeIndex == 0) ? 0 : 1;
+            final int widthShifted  = width >> shift;
+            final int heightShifted = height >> shift;
+
+            buffer.position(rowStride * (crop.top >> shift) + pixelStride * (crop.left >> shift));
+
+            for (int row = 0; row < heightShifted; row++)
+            {
+                final int length;
+
+                if (pixelStride == 1 && outputStride == 1)
+                {
+                    length = widthShifted;
+                    buffer.get(output.array(), channelOffset, length);
+                    channelOffset += length;
+                }
+                else
+                {
+                    length = (widthShifted - 1) * pixelStride + 1;
+                    buffer.get(rowData, 0, length);
+
+                    for (int col = 0; col < widthShifted; col++)
+                    {
+                        output.array()[channelOffset] = rowData[col * pixelStride];
+                        channelOffset += outputStride;
+                    }
+                }
+
+                if (row < heightShifted - 1)
+                {
+                    buffer.position(buffer.position() + rowStride - length);
+                }
+            }
+        }
+
+        return output;
+    }
+
+    Bitmap prevLumBitmap = null;
+
+    /** Show a greyscale preview of the camera luminance */
+    private void updateLumPreview(byte[] lumMap, int dataWidth, int width, int height) {
+        Bitmap.Config config = Bitmap.Config.ARGB_8888;
+
+        var colorInts = new int[lumMap.length];
+
+        int j = 0;
+        for (int y = 0; y < height; y++) {
+            var yOff = dataWidth * y;
+            for (int x = 0; x < width; x++) {
+                var idx = yOff + x;
+                var sample = lumMap[idx] & 0xFF;
+                var color = 0x00_01_01_01 * sample;
+                colorInts[j++] = 0xFF000000 + color;
+            }
+        }
+
+        Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
+        luminanceViewer.setImageBitmap(bitmap);
+
+        if (prevLumBitmap != null) prevLumBitmap.recycle();
+        prevLumBitmap = bitmap;
+    }
+
+    private void updateLumPreview(int[] colorInts, int width, int height) {
+        Bitmap.Config config = Bitmap.Config.ARGB_8888;
+
+        Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
+        luminanceViewer.setImageBitmap(bitmap);
+
+        if (prevLumBitmap != null) prevLumBitmap.recycle();
+        prevLumBitmap = bitmap;
+    }
+
+    Bitmap prevThreshBitmap = null;
+    /** Show a black&white preview of the barcode scanner thresholded map */
     private void updateThresholdPreview(BinaryBitmap binMap) {
         Bitmap.Config config = Bitmap.Config.RGB_565;
         Bitmap bitmap = null;
@@ -163,10 +313,14 @@ public class Main extends Activity
         }
 
         thresholdViewer.setImageBitmap(bitmap);
+
+        if (prevThreshBitmap != null) prevThreshBitmap.recycle();
+        prevThreshBitmap = bitmap;
     }
 
     /** Factor used to zoom in to image. This helps with badly printed codes */
     private double scaleFactor = 0.0;
+
 
     private BinaryBitmap getBinMap(Bitmap bitmap) {
         if (bitmap == null) return null;
@@ -180,7 +334,23 @@ public class Main extends Activity
             bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
             var image = maybeInvert(new RGBLuminanceSource(w,h, pixels));
 
-            image = image.crop(32,32, w-64, h-64);
+            // Threshold down to a black&white image
+            var thresholder = new HybridBinarizer(image);
+            //var thresholder = new GlobalHistogramBinarizer(image);
+
+            return new BinaryBitmap(thresholder);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not read bitmap image: "+e);
+        }
+        return null;
+    }
+
+    private BinaryBitmap getBinMap(LuminanceSource bitmap) {
+        if (bitmap == null) return null;
+
+        try {
+            // Transfer to ZXing format
+            var image = maybeInvert(bitmap);
 
             // Threshold down to a black&white image
             var thresholder = new HybridBinarizer(image);

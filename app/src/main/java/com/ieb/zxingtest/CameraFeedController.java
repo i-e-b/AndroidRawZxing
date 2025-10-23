@@ -4,12 +4,10 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.content.res.Configuration;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
+import android.graphics.PixelFormat;
 import android.graphics.Point;
-import android.graphics.RectF;
-import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -28,7 +26,6 @@ import android.util.Log;
 import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.Surface;
-import android.view.TextureView;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -42,18 +39,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** @noinspection NullableProblems*/
-public class CameraFeedController {
+public class CameraFeedController implements ImageReader.OnImageAvailableListener {
     private final Activity activity;
+    ImageReader imageReader;
 
     /**
      * Set up camera control
      * @param main Hosting activity
-     * @param view preview output (captured image will match the size of this)
      * @param updateTrigger trigger to call when a frame is captured
      */
-    public CameraFeedController(Activity main, TextureView view, Consumer<SurfaceTexture> updateTrigger) {
+    public CameraFeedController(Activity main, Consumer<ImageReader> updateTrigger) {
         activity = main;
-        mTextureView = view;
         this.updateTrigger = updateTrigger;
     }
 
@@ -103,42 +99,12 @@ public class CameraFeedController {
     /**
      * Max preview width that is guaranteed by Camera2 API
      */
-    public static final int MAX_PREVIEW_WIDTH = 1920;
+    public static final int MAX_PREVIEW_WIDTH = 800;//1920;
 
     /**
      * Max preview height that is guaranteed by Camera2 API
      */
-    public static final int MAX_PREVIEW_HEIGHT = 1080;
-
-    /**
-     * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a
-     * {@link TextureView}.
-     */
-    private final TextureView.SurfaceTextureListener mSurfaceTextureListener
-            = new TextureView.SurfaceTextureListener() {
-
-        @Override
-        public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
-            openCamera(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT);//width, height);
-        }
-
-        @Override
-        public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
-            configureTransform(width, height);
-        }
-
-        @Override
-        public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
-            return true;
-        }
-
-        @Override
-        public void onSurfaceTextureUpdated(SurfaceTexture texture) {
-            // feed back an update trigger
-            if (updateTrigger != null) updateTrigger.accept(texture);
-        }
-
-    };
+    public static final int MAX_PREVIEW_HEIGHT = 600;//1080;
 
     /**
      * ID of the current {@link CameraDevice}.
@@ -148,8 +114,7 @@ public class CameraFeedController {
     /**
      * An  AutoFitTextureView for camera preview.
      */
-    private final TextureView mTextureView;
-    private final Consumer<SurfaceTexture> updateTrigger;
+    private final Consumer<ImageReader> updateTrigger;
 
     /**
      * A {@link CameraCaptureSession } for camera preview.
@@ -160,11 +125,6 @@ public class CameraFeedController {
      * A reference to the opened {@link CameraDevice}.
      */
     private CameraDevice mCameraDevice;
-
-    /**
-     * The {@link Size} of camera preview.
-     */
-    private Size mPreviewSize;
 
     /**
      * {@link CameraDevice.StateCallback} is called when {@link CameraDevice} changes its state.
@@ -383,11 +343,7 @@ public class CameraFeedController {
         // available, and "onSurfaceTextureAvailable" will not be called. In that case, we can open
         // a camera and start preview from here (otherwise, we wait until the surface is ready in
         // the SurfaceTextureListener).
-        if (mTextureView.isAvailable()) {
-            openCamera(mTextureView.getWidth(), mTextureView.getHeight());
-        } else {
-            mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
-        }
+        openCamera();
     }
 
     /** Call this when hosting activity is paused (or when ending camera control) */
@@ -488,20 +444,9 @@ public class CameraFeedController {
                 // Danger, W.R.! Attempting to use too large a preview size could  exceed the camera
                 // bus' bandwidth limitation, resulting in gorgeous previews but the storage of
                 // garbage capture data.
-                mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class),
+                /*mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class),
                         rotatedPreviewWidth, rotatedPreviewHeight, maxPreviewWidth,
-                        maxPreviewHeight, largest);
-
-                // We fit the aspect ratio of TextureView to the size of preview we picked.
-                if (mTextureView instanceof AutoFitTextureView){
-                    var autoView = (AutoFitTextureView) mTextureView;
-                    int orientation = activity.getResources().getConfiguration().orientation;
-                    if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                        autoView.setAspectRatio(mPreviewSize.getWidth(), mPreviewSize.getHeight());
-                    } else {
-                        autoView.setAspectRatio(mPreviewSize.getHeight(), mPreviewSize.getWidth());
-                    }
-                }
+                        maxPreviewHeight, largest);*/
 
                 // Check if the flash is supported.
                 Boolean available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
@@ -520,7 +465,10 @@ public class CameraFeedController {
     /**
      * Opens the camera specified by mCameraId.
      */
-    private void openCamera(int width, int height) {
+    private void openCamera() {
+        int width = MAX_PREVIEW_WIDTH;
+        int height = MAX_PREVIEW_HEIGHT;
+
         var permission = activity.checkSelfPermission(Manifest.permission.CAMERA);
         if (permission != PackageManager.PERMISSION_GRANTED) {
             requestCameraPermission();
@@ -589,19 +537,24 @@ public class CameraFeedController {
         }
     }
 
+
+
     /**
      * Creates a new {@link CameraCaptureSession} for camera preview.
      */
     private void createCameraPreviewSession() {
         try {
-            SurfaceTexture texture = mTextureView.getSurfaceTexture();
-            assert texture != null;
-
-            // We configure the size of default buffer to be the size of camera preview we want.
-            texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
+            if (imageReader == null) {
+                // NOTE: ImageFormat.PRIVATE always works, but refuses to supply data.
+                //       Docs claim that ImageFormat.JPEG always works, but this is not true.
+                // ImageFormat.YUV_420_888 seems to be most reliable.
+                imageReader = ImageReader.newInstance(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT, ImageFormat.YUV_420_888, 1);
+                imageReader.setOnImageAvailableListener(this, null);
+            }
 
             // This is the output Surface we need to start preview.
-            Surface surface = new Surface(texture);
+            Surface surface = imageReader.getSurface(); //new Surface(targetTexture);
+
 
             // We set up a CaptureRequest.Builder with the output Surface.
             mPreviewRequestBuilder
@@ -659,7 +612,7 @@ public class CameraFeedController {
      * @param viewHeight The height of `mTextureView`
      */
     private void configureTransform(int viewWidth, int viewHeight) {
-        if (null == mTextureView || null == mPreviewSize || null == activity) {
+        /*if (null == mTextureView || null == mPreviewSize || null == activity) {
             return;
         }
         int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
@@ -679,7 +632,7 @@ public class CameraFeedController {
         } else if (Surface.ROTATION_180 == rotation) {
             matrix.postRotate(180, centerX, centerY);
         }
-        mTextureView.setTransform(matrix);
+        mTextureView.setTransform(matrix);*/
     }
 
     /**
@@ -810,6 +763,11 @@ public class CameraFeedController {
             requestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
                     CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
         }
+    }
+
+    @Override
+    public void onImageAvailable(ImageReader reader) {
+        updateTrigger.accept(reader);
     }
 
     /**
