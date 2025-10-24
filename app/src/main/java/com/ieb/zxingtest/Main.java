@@ -18,7 +18,6 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
-import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
@@ -184,7 +183,11 @@ public class Main extends Activity
 
             //image = convolution3x3(image, imgWidth, imgHeight, conv_blur);
             //image = convolution3x3(image, imgWidth, imgHeight, conv_v_blur);
-            blurSharpen(image, imgWidth, imgHeight);
+            tryMaskingBarcodes(image, imgWidth, imgHeight);
+            blurVert(image, imgWidth, imgHeight);
+
+            // TODO: try a scan-line algorithm to whiten areas without much contrast
+            // TODO: try enhancing contrast
 
             updateLumPreview(image, imgWidth, imgHeight);
 
@@ -205,22 +208,111 @@ public class Main extends Activity
         }
     }
 
-    /** Blur vertically, sharpen horizontally */
 
-    private void blurSharpen(byte[] image, int width, int height) {
+    private BinaryBitmap convertToBinaryMap(LuminanceSource bitmap) {
+        if (bitmap == null) return null;
+
+        try {
+            // Transfer to ZXing format
+            var image = maybeInvert(bitmap);
+
+            // Threshold down to a black&white image
+            var thresholder = new HybridBinarizer(image);
+            //var thresholder = new GlobalHistogramBinarizer(image);
+
+            return new BinaryBitmap(thresholder);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not read bitmap image: "+e);
+        }
+        return null;
+    }
+
+    private static final int[] contrastMask = new int[1024];
+    private static final int[] attentionMask = new int[1024];
+    private void tryMaskingBarcodes(byte[] image, int width, int height) {
+        int margin = 32;
+        int threshold = 4;
+        for (int y = margin; y < height - margin; y++) {
+            var yOff = y * width;
+
+            // build a contrast mask
+            int contrastMax = 0;
+            for (int x = margin; x < width-margin; x++) {
+                var idx = yOff + x;
+
+                var l3 = image[idx-3] & 0xFF;
+                var l2 = image[idx-2] & 0xFF;
+                var l1 = image[idx-1] & 0xFF;
+
+                var c = image[idx] & 0xFF;
+
+                var r1 = image[idx+1] & 0xFF;
+                var r2 = image[idx+2] & 0xFF;
+                var r3 = image[idx+3] & 0xFF;
+
+                attentionMask[x] = 255;
+                contrastMask[x] = (l1+c+c+r1) - (l2+l3+r2+r3);
+            }
+
+            // smear contrast mask with a size threshold
+            for (int x = margin; x < width-margin; x++) {
+                var n = 0;
+                for (int i = 0; i < margin; i++) {
+                    if (contrastMask[x + i] > 64) n++;
+                }
+                if (n > threshold) {
+                    for (int i = 0; i < margin; i++) {
+                        attentionMask[x - i] = 0;
+                        attentionMask[x + i] = 0;
+                    }
+                }
+            }
+
+            // mask original image using the attention mask
+            int min = 200;
+            int max = 32;
+            for (int x = margin; x < width-margin; x++) {
+                var idx = yOff + x;
+                var sample =((image[idx] & 0xFF) + attentionMask[x]); // Java byte slinging is a thing...
+                image[idx] = pin(
+                        (sample + attentionMask[x])
+                );
+
+                if (sample > 32 && sample < min) min = sample;
+                if (sample < 200 && sample > max) max = sample;
+
+            }
+
+            // re-threshold
+            /*int centre = max - ((max-min)/2);
+            for (int x = margin; x < width-margin; x++) {
+                var idx = yOff + x;
+                var sample = image[idx] & 0xFF; // Java byte slinging is a thing...
+
+                if (sample < centre) image[idx] = 0;
+                else image[idx] = -1;
+            }*/
+        }
+    }
+
+    /** Blur vertically only */
+    private void blurVert(byte[] image, int width, int height) {
         int margin = 2;
         for (int y = margin; y < height-margin; y++) {
             var yOff = y * width;
             for (int x = margin; x < width-margin; x++) {
                 var idx = yOff + x;
 
+                var b0 = image[idx - width] & 0xFF;
                 var b1 = image[idx + width] & 0xFF;
                 var b2 = image[idx + width + width] & 0xFF;
+                //var r0 = image[idx - 1] & 0xFF;
                 //var r1 = image[idx + 1] & 0xFF;
                 //var r2 = image[idx + 2] & 0xFF;
                 var c = image[idx] & 0xFF;
 
-                var n = (b1+b2+c)/3;// - r1 - r2;
+                var n = (b0+b1+b2+c)/4;// blur only
+                //var n = (b1+b2+c) - r1 - r2; // blur and sharpen
 
                 image[idx] = pin(n); // feedback to strengthen effect
             }
@@ -305,7 +397,7 @@ public class Main extends Activity
         }
 
         Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
-        luminanceViewer.setImageBitmap(bitmap);
+        runOnUiThread(()-> luminanceViewer.setImageBitmap(bitmap));
 
         if (prevLumBitmap != null) prevLumBitmap.recycle();
         prevLumBitmap = bitmap;
@@ -332,29 +424,11 @@ public class Main extends Activity
             Log.e(TAG, "Failure in bin-map preview", e);
         }
 
-        thresholdViewer.setImageBitmap(bitmap);
+        Bitmap finalBitmap = bitmap;
+        runOnUiThread(()-> thresholdViewer.setImageBitmap(finalBitmap));
 
         if (prevThreshBitmap != null) prevThreshBitmap.recycle();
         prevThreshBitmap = bitmap;
-    }
-
-
-    private BinaryBitmap convertToBinaryMap(LuminanceSource bitmap) {
-        if (bitmap == null) return null;
-
-        try {
-            // Transfer to ZXing format
-            var image = maybeInvert(bitmap);
-
-            // Threshold down to a black&white image
-            var thresholder = new HybridBinarizer(image);
-            //var thresholder = new GlobalHistogramBinarizer(image);
-
-            return new BinaryBitmap(thresholder);
-        } catch (Exception e) {
-            Log.w(TAG, "Could not read bitmap image: "+e);
-        }
-        return null;
     }
 
 
