@@ -63,10 +63,9 @@ public class Main extends Activity
 
         luminanceViewer = new ImageView(this);
         thresholdViewer = new ImageView(this);
-        camControl = new CameraFeedController(this, this::updateReading);
+        camControl = new CameraFeedController(this, 1024, 768, this::updateReading);
 
         root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
-        //root.addView(cameraViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
         root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
         root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
 
@@ -124,15 +123,18 @@ public class Main extends Activity
 
     /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
     private LuminanceSource maybeInvert(LuminanceSource source) {
-        /*shouldInvert = !shouldInvert;
-        if (shouldInvert) return source.invert();*/
+        // Alternate between inverting and not. Helps with white-on-black codes
+        shouldInvert = !shouldInvert;
+        if (shouldInvert) return source.invert();
         return source;
     }
 
+    private static byte[] imageTmp;
+    private static byte[] imageSrc;
     /** read luminance into a byte array, correcting for relative sensor rotation */
-    private byte[] imageToBytes(ImageReader reader) {
-        //try (Image image = reader.acquireNextImage()) {
-        try (Image image = reader.acquireLatestImage()) {
+    private ByteImage imageToBytes(ImageReader reader, int insetX, int insetY) {
+        try (Image image = reader.acquireNextImage()) {
+        //try (Image image = reader.acquireLatestImage()) {
             if (image == null) return null;
 
             var planes = image.getPlanes();
@@ -142,54 +144,94 @@ public class Main extends Activity
                 return null;
             }
 
+            // Read plane into temp buffer
             var yPlane = planes[0];
             var buffer = yPlane.getBuffer();
-            byte[] data = new byte[buffer.remaining()];
+            var bufferSize = buffer.remaining();
+            if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
+            var data = imageTmp;
             buffer.get(data);
 
-            var imgWidth = image.getWidth();
-            var imgHeight = image.getHeight();
+            // Get parameters of the plane
+            var srcWidth = image.getWidth();
+            var srcHeight = image.getHeight();
             var dataWidth = yPlane.getRowStride();
 
-            var result = new byte[imgWidth * imgHeight];
-
+            // Get parameter of output
             var rot = camControl.Orientation();
-            int j = 0;
+            var dstWidth = srcWidth;
+            var dstHeight = srcHeight;
             if (rot == 90 || rot == 270){
-                for (int x = 0; x < imgWidth; x++) {
-                    for (int y = 0; y < imgHeight; y++) {
-                        var yOff = dataWidth * y;
-                        var idx = yOff + x;
-                        result[j++] = data[idx];
+                //noinspection SuspiciousNameCombination
+                dstWidth = srcHeight;
+                //noinspection SuspiciousNameCombination
+                dstHeight = srcWidth;
+            }
+            dstWidth -= insetX * 2;
+            dstHeight -= insetY * 2;
+
+            // Ensure the final output is ready
+            var requiredSize = srcWidth * srcHeight;
+            if (imageSrc == null || imageSrc.length < requiredSize) {imageSrc = new byte[requiredSize];}
+            var pkg = new ByteImage();
+            pkg.image = imageSrc;
+            pkg.width = dstWidth;
+            pkg.height = dstHeight;
+
+            // Copy from Y-plane into final image,
+            // taking into account margins and rotations
+
+            if (rot == 0){ // no flips
+                int outp = 0;
+                for (int y = 0; y < dstHeight; y++) {
+                    var yOff = dataWidth * (y+ insetY);
+
+                    // Copy a scan line
+                    for (int x = 0; x < dstWidth; x++) {
+                        var idx = yOff + x + insetX;
+                        imageSrc[outp++] = data[idx];
                     }
                 }
-            } else {
-                for (int y = 0; y < imgHeight; y++) {
-                    var yOff = dataWidth * y;
-                    for (int x = 0; x < imgWidth; x++) {
-                        var idx = yOff + x;
-                        result[j++] = data[idx];
+            } else if (rot == 180){ // Flip horz and vert
+                int outp = 0;
+                for (int y = dstHeight-1; y >= 0; y--) {
+                    var yOff = dataWidth * (y+ insetY);
+
+                    // Copy a scan line
+                    for (int x = dstWidth - 1; x >= 0; x--) {
+                        var idx = yOff + x + insetX;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            } else if (rot == 90) { // copy columns into rows, and flip y
+                int outp = 0;
+                for (int x = 0; x < dstHeight; x++) {
+
+                    // Copy a scan line
+                    for (int y = dstWidth-1; y >= 0; y--) {
+                        var yy = y + insetX;
+                        var yOff = dataWidth * (yy);
+                        var idx = yOff + x + insetY;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            } else if (rot == 270) { // copy columns into rows
+                int outp = 0;
+                for (int x = 0; x < dstHeight; x++) {
+
+                    // Copy a scan line
+                    for (int y = 0; y < dstWidth; y++) {
+                        var yOff = dataWidth * (y + insetX);
+                        var idx = yOff + x + insetY;
+                        imageSrc[outp++] = data[idx];
                     }
                 }
             }
 
-            if (rot == 90){
-                for (int y = 0; y < imgWidth; y++) {
-                    var yOff = imgHeight * y;
-                    var right = imgHeight - 1;
-                    var left = 0;
-                    while (left < right) {
-                        var l = yOff + left;
-                        var r = yOff + right;
-                        var t = result[l];
-                        result[l] = result[r];
-                        result[r] = t;
-                        left++;
-                        right--;
-                    }
-                }
-            }
-            return result;
+            return pkg;
+        } catch (Exception e){
+            Log.e(TAG, "Failed to read camera capture: " + e);
+            return null;
         }
     }
 
@@ -200,32 +242,19 @@ public class Main extends Activity
         }
         updateInProgress = true;
 
-
         try {
-            var imgHeight = reader.getHeight();
-            var imgWidth = reader.getWidth();
-
-            var rot = camControl.Orientation();
-            if (rot == 90 || rot == 270) {
-                imgHeight = reader.getWidth();
-                imgWidth = reader.getHeight();
-            }
-
-            var image = imageToBytes(reader);
+            int insetX = 64;
+            int insetY = 256;
+            var image = imageToBytes(reader, insetX, insetY);
             if (image == null) return;
 
-            //image = convolution3x3(image, imgWidth, imgHeight, conv_blur);
-            //image = convolution3x3(image, imgWidth, imgHeight, conv_v_blur);
-            //tryMaskingBarcodes(image, imgWidth, imgHeight);
-            thresholdHorz(image, imgWidth, imgHeight);
-            blurVert(image, imgWidth, imgHeight);
+            thresholdHorz(image.image, image.width, image.height, 64);
 
-            // TODO: try a scan-line algorithm to whiten areas without much contrast
-            // TODO: try enhancing contrast
+            updateLumPreview(image.image, image.width, image.height);
 
-            updateLumPreview(image, imgWidth, imgHeight);
-
-            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(image, imgWidth, imgHeight, 0, 0, imgWidth, imgHeight, false);
+            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(
+                    image.image, image.width, image.height,
+                    0, 0, image.width, image.height, false);
 
             var binMap = convertToBinaryMap(lum);
 
@@ -236,7 +265,7 @@ public class Main extends Activity
             tryToFindQrCodeInBitmap(binMap);
             tryToFind128CodeInBitmap(binMap);
         } catch (Throwable t) {
-            Log.e(TAG, "Failed to read camera capture: " + t);
+            Log.e(TAG, "Failed to scan image: " + t);
         } finally {
             updateInProgress = false;
         }
@@ -261,125 +290,37 @@ public class Main extends Activity
         return null;
     }
 
-    private static final int[] contrastMask = new int[1024];
-    private static final int[] attentionMask = new int[1024];
-    private void tryMaskingBarcodes(byte[] image, int width, int height) {
-        int margin = 32;
-        int threshold = 4;
-
-        for (int y = margin; y < height - margin; y++) {
-            var yOff = y * width;
-
-            // build a contrast mask
-            for (int x = margin; x < width-margin; x++) {
-                var idx = yOff + x;
-
-                var l3 = image[idx-3] & 0xFF;
-                var l2 = image[idx-2] & 0xFF;
-                var l1 = image[idx-1] & 0xFF;
-
-                var c = image[idx] & 0xFF;
-
-                var r1 = image[idx+1] & 0xFF;
-                var r2 = image[idx+2] & 0xFF;
-                var r3 = image[idx+3] & 0xFF;
-
-                attentionMask[x] = 255;
-                contrastMask[x] = (l1+c+c+r1) - (l2+l3+r2+r3);
-            }
-
-            // smear contrast mask with a size threshold
-            for (int x = margin; x < width-margin; x++) {
-                var n = 0;
-                for (int i = 0; i < margin; i++) {
-                    if (contrastMask[x + i] > 64) n++;
-                }
-                if (n > threshold) {
-                    for (int i = 0; i < margin; i++) {
-                        attentionMask[x - i] = 0;
-                        attentionMask[x + i] = 0;
-                    }
-                }
-            }
-
-            // mask original image using the attention mask
-            int min = 200;
-            int max = 32;
-            for (int x = margin; x < width-margin; x++) {
-                var idx = yOff + x;
-                var sample =((image[idx] & 0xFF) + attentionMask[x]); // Java byte slinging is a thing...
-                image[idx] = pin(
-                        (sample + attentionMask[x])
-                );
-
-                if (sample > 32 && sample < min) min = sample;
-                if (sample < 200 && sample > max) max = sample;
-
-            }
-        }
-    }
-
-    /** Blur vertically only */
-    private void blurVert(byte[] image, int width, int height) {
-        final int margin = 4;
-        var tmp = new byte[image.length];
-
-        for (int x = margin; x < width - margin; x++) {
-            int lead = x;
-            int trail = x;
-            int mid = x + (width * (margin/2));
-            int sum = 0;
-
-            for (int i = 0; i < margin; i++) {
-                sum += image[lead] & 0xFF;
-                lead += width;
-            }
-
-            for (int y = margin; y < height - margin; y++) {
-                tmp[mid] = pin(sum / margin);
-
-                int incoming = image[lead] & 0xFF;
-                int outgoing = image[trail] & 0xFF;
-
-                sum += incoming - outgoing;
-
-                lead += width;
-                trail += width;
-                mid += width;
-            }
-        }
-
-        System.arraycopy(tmp, 0, image, 0, image.length);
-    }
-
+    private static byte[] thresholdTemp;
     /** threshold pixel based on a running average */
-    private void thresholdHorz(byte[] image, int width, int height){
-        int margin = 16;
-        var tmp = new byte[image.length];
+    private void thresholdHorz(byte[] image, int width, int height, int radius){
+        int strength = 32;
+        if (thresholdTemp == null || thresholdTemp.length < image.length) thresholdTemp = new byte[image.length];
+        var tmp = thresholdTemp;
 
-        for (int y = margin; y < height - margin; y++) {
+        for (int y = radius; y < height - radius; y++) {
             int yOff = y * width;
             int sum = 0;
             int lead = yOff;
             int trail = yOff;
-            int mid = yOff + (margin / 2);
+            int mid = yOff + (radius / 2);
 
-            for (int i = 0; i < margin; i++) {
+            for (int i = 0; i < radius; i++) {
                 sum += image[lead] & 0xFF;
                 lead ++;
             }
 
             // decide running average
-            for (int x = margin; x < width-margin; x++) {
+            for (int x = radius; x < width-radius; x++) {
                 var actual = image[mid] & 0xFF;
-                var target = sum / margin;
+                var target = sum / radius;
 
                 // Don't turn white areas into black lines or vice-versa:
                 if (target > 224) target = 224;
                 if (target < 32) target = 32;
 
-                if (actual < target) tmp[mid] = pin(actual - 64);
-                else tmp[mid] = pin(actual + 64);
+                // Push values away from centre point
+                if (actual < target) tmp[mid] = pin(actual - strength);
+                else tmp[mid] = pin(actual + strength);
 
                 int incoming = image[lead] & 0xFF;
                 int outgoing = image[trail] & 0xFF;
@@ -395,70 +336,6 @@ public class Main extends Activity
         System.arraycopy(tmp, 0, image, 0, image.length);
     }
 
-    private static final int[] conv_edge = {
-            1,
-            -1, -1, -1,
-            -1,  8, -1,
-            -1, -1, -1
-    };
-    private static final int[] conv_ridge = {
-            1,
-             0, -1,  0,
-            -1,  4, -1,
-             0, -1,  0
-    };
-    private static final int[] conv_sharpen = {
-            1,
-            -1, -2, -1,
-            -2, 13, -2,
-            -1, -2, -1
-    };
-    private static final int[] conv_blur= {
-            16,
-             1,  2,  1,
-             2,  4, 2,
-             1,  2,  1
-    };
-    private static final int[] conv_v_blur= {
-            3,
-            0,  1,  0,
-            0,  1,  0,
-            0,  1,  0
-    };
-
-    /** Experiments trying to improve capture */
-    private byte[] convolution3x3(byte[] image, int width, int height, int[] factors) {
-        var result = new byte[image.length];
-        for (int y = 1; y < height-1; y++) {
-            var yOff = y * width;
-            for (int x = 1; x < width-1; x++) {
-                var idx = yOff + x;
-
-                var sample = 0;
-                var dy = -width;
-                var f = 1;
-                for (int cy = 0; cy < 3; cy++) {
-                    var dx = -1;
-                    for (int cx = 0; cx < 3; cx++) {
-                        sample += (image[idx + dy + dx] & 0xFF) * factors[f];
-                        f++;
-                    }
-                    dy += width;
-                }
-
-                result[idx] = pin(sample / factors[0]);
-            }
-        }
-        return result;
-    }
-
-
-    private byte pin(long v) {
-        if (v < 0) return 0x00;
-        if (v > 254) return (byte)0xFF;
-        return (byte) v;
-    }
-
     private byte pin(int v) {
         if (v < 0) return 0x00;
         if (v > 254) return (byte)0xFF;
@@ -467,11 +344,13 @@ public class Main extends Activity
 
     Bitmap prevLumBitmap = null;
 
+    private static int[] lumTemp;
     /** Show a greyscale preview of the camera luminance */
     private void updateLumPreview(byte[] lumMap, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
-        var colorInts = new int[lumMap.length];
+        if (lumTemp == null || lumTemp.length < lumMap.length) lumTemp = new int[lumMap.length];
+        var colorInts = lumTemp;
 
         for (int i = 0; i < lumMap.length; i++) {
             var sample = lumMap[i] & 0xFF;
@@ -479,22 +358,12 @@ public class Main extends Activity
             colorInts[i] = 0xFF000000 + color;
         }
 
-        Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
         runOnUiThread(()-> {
+            Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
             luminanceViewer.setImageBitmap(bitmap);
             if (prevLumBitmap != null) prevLumBitmap.recycle();
             prevLumBitmap = bitmap;
         });
-    }
-
-    private void updateLumPreview(int[] colorInts, int width, int height) {
-        Bitmap.Config config = Bitmap.Config.ARGB_8888;
-
-        Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
-        luminanceViewer.setImageBitmap(bitmap);
-
-        if (prevLumBitmap != null) prevLumBitmap.recycle();
-        prevLumBitmap = bitmap;
     }
 
     Bitmap prevThreshBitmap = null;
@@ -503,7 +372,8 @@ public class Main extends Activity
         Bitmap.Config config = Bitmap.Config.RGB_565;
         Bitmap bitmap = null;
         try {
-            bitmap = Bitmap.createBitmap(binMap.getBlackMatrix().toColorInts(), binMap.getWidth(), binMap.getHeight(), config);
+            // TODO: keep one bitmap and do setPixels instead.
+            bitmap = Bitmap.createBitmap(binMap.getBlackMatrix().toColorInts(shouldInvert), binMap.getWidth(), binMap.getHeight(), config);
         } catch (NotFoundException e) {
             Log.e(TAG, "Failure in bin-map preview", e);
         }
@@ -514,7 +384,6 @@ public class Main extends Activity
             if (prevThreshBitmap != null) prevThreshBitmap.recycle();
             prevThreshBitmap = finalBitmap;
         });
-
     }
 
 

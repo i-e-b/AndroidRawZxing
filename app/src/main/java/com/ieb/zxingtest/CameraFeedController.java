@@ -11,12 +11,10 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -24,9 +22,6 @@ import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
 
-import java.io.File;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -47,8 +42,10 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      * @param main Hosting activity
      * @param updateTrigger trigger to call when a frame is captured
      */
-    public CameraFeedController(Activity main, Consumer<ImageReader> updateTrigger) {
+    public CameraFeedController(Activity main, int width, int height, Consumer<ImageReader> updateTrigger) {
         activity = main;
+        if (width > 0 && width < 1920) PREVIEW_WIDTH = width;
+        if (height > 0 && height < 1080) PREVIEW_HEIGHT = height;
         this.updateTrigger = updateTrigger;
     }
 
@@ -65,34 +62,14 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     private static final int STATE_PREVIEW = 0;
 
     /**
-     * Camera state: Waiting for the focus to be locked.
+     * Max preview width that is guaranteed by Camera2 API is 1920
      */
-    private static final int STATE_WAITING_LOCK = 1;
+    public static int PREVIEW_WIDTH = 800;//1920;
 
     /**
-     * Camera state: Waiting for the exposure to be precapture state.
+     * Max preview height that is guaranteed by Camera2 API is 1080
      */
-    private static final int STATE_WAITING_PRECAPTURE = 2;
-
-    /**
-     * Camera state: Waiting for the exposure state to be something other than precapture.
-     */
-    private static final int STATE_WAITING_NON_PRECAPTURE = 3;
-
-    /**
-     * Camera state: Picture was taken.
-     */
-    private static final int STATE_PICTURE_TAKEN = 4;
-
-    /**
-     * Max preview width that is guaranteed by Camera2 API
-     */
-    public static final int MAX_PREVIEW_WIDTH = 800;//1920;
-
-    /**
-     * Max preview height that is guaranteed by Camera2 API
-     */
-    public static final int MAX_PREVIEW_HEIGHT = 600;//1080;
+    public static int PREVIEW_HEIGHT = 600;//1080;
 
     /**
      * ID of the current {@link CameraDevice}.
@@ -297,12 +274,12 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                     maxPreviewHeight = displaySize.x;
                 }
 
-                if (maxPreviewWidth > MAX_PREVIEW_WIDTH) {
-                    maxPreviewWidth = MAX_PREVIEW_WIDTH;
+                if (maxPreviewWidth > PREVIEW_WIDTH) {
+                    maxPreviewWidth = PREVIEW_WIDTH;
                 }
 
-                if (maxPreviewHeight > MAX_PREVIEW_HEIGHT) {
-                    maxPreviewHeight = MAX_PREVIEW_HEIGHT;
+                if (maxPreviewHeight > PREVIEW_HEIGHT) {
+                    maxPreviewHeight = PREVIEW_HEIGHT;
                 }
 
                 // Danger, W.R.! Attempting to use too large a preview size could  exceed the camera
@@ -327,8 +304,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      * Opens the camera specified by mCameraId.
      */
     private void openCamera() {
-        int width = MAX_PREVIEW_WIDTH;
-        int height = MAX_PREVIEW_HEIGHT;
+        int width = PREVIEW_WIDTH;
+        int height = PREVIEW_HEIGHT;
 
         var permission = activity.checkSelfPermission(Manifest.permission.CAMERA);
         if (permission != PackageManager.PERMISSION_GRANTED) {
@@ -408,7 +385,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                 // NOTE: ImageFormat.PRIVATE always works, but refuses to supply data.
                 //       Docs claim that ImageFormat.JPEG always works, but this is not true.
                 // ImageFormat.YUV_420_888 seems to be most reliable.
-                imageReader = ImageReader.newInstance(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT, ImageFormat.YUV_420_888, 1);
+                imageReader = ImageReader.newInstance(PREVIEW_WIDTH, PREVIEW_HEIGHT, ImageFormat.YUV_420_888, 1);
                 imageReader.setOnImageAvailableListener(this, null);
             }
 

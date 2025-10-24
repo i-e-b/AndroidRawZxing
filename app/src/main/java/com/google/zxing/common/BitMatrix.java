@@ -165,8 +165,11 @@ public final class BitMatrix implements Cloneable {
 
   /** Convert the bit matrix to an array of ints, one int per pixel.
    * This is mainly for displaying thresholded images for diagnostics. */
-  public int[] toColorInts() {
+  public int[] toColorInts(boolean invert) {
     var result = new int[width * height];
+
+    var white = invert ? 0x00000000 : 0xFFFFFFFF;
+    var black = invert ? 0xFFFFFFFF : 0x00000000;
 
     var i = 0;
     for (int y = 0; y < height; y++) {
@@ -177,7 +180,7 @@ public final class BitMatrix implements Cloneable {
         var chunk = bits[offset];
         for (int ci = 0; ci < 32 && x < width; ci++){
           boolean set = (chunk & 1) == 0;
-          result[i++] = set ? 0xFFFFFFFF : 0x00000000;
+          result[i++] = set ? white : black;
           chunk >>>= 1;
           x++;
         }
