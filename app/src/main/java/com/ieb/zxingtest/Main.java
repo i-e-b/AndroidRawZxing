@@ -18,7 +18,6 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
-import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
@@ -69,16 +68,16 @@ public class Main extends Activity
         root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
         root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
 
-        text.append("\r\nRunning test. Point camera at a QR code...");
+        text.append("\r\nRunning test. Point camera at a QR code or Code128 bar code...");
 
         // Start camera feeding into the preview control
         camControl.onResume();
     }
 
-    private void tryToFindQrCodeInBitmap(BinaryBitmap binMap) {
+    private boolean tryToFindQrCodeInBitmap(BinaryBitmap binMap) {
         if (binMap == null) {
             Log.w(TAG, "Invalid binMap");
-            return;
+            return false;
         }
 
         try {
@@ -90,18 +89,20 @@ public class Main extends Activity
                 text.append("\r\nBar code result: " + result.toString());
                 text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
             });
+            return true;
         } catch (com.google.zxing.NotFoundException nf) {
             // No QR code found. This is fine
         } catch (Exception e) {
             // If the capture is blurry or not at a good angle, we probably get a checksum error here.
             Log.w(TAG, "Could not read bar-code: "+e);
         }
+        return false;
     }
 
-    private void tryToFind128CodeInBitmap(BinaryBitmap binMap) {
+    private boolean tryToFind128CodeInBitmap(BinaryBitmap binMap) {
         if (binMap == null) {
             Log.w(TAG, "Invalid binMap");
-            return;
+            return false;
         }
 
         try {
@@ -113,12 +114,14 @@ public class Main extends Activity
                 text.append("\r\nBar code result: " + result.toString());
                 text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
             });
+            return true;
         } catch (com.google.zxing.NotFoundException nf) {
             // No QR code found. This is fine
         } catch (Exception e) {
             // If the capture is blurry or not at a good angle, we probably get a checksum error here.
             Log.w(TAG, "Could not read bar-code: "+e);
         }
+        return false;
     }
 
     /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
@@ -235,6 +238,7 @@ public class Main extends Activity
         }
     }
 
+    private static int testCycles = 0;
     /** Try to read a QR code from the current texture */
     private void updateReading(ImageReader reader) {
         if (updateInProgress) {
@@ -248,9 +252,19 @@ public class Main extends Activity
             var image = imageToBytes(reader, insetX, insetY);
             if (image == null) return;
 
-            thresholdHorz(image.image, image.width, image.height, 64);
+            updateVideoPreview(image.image, image.width, image.height);
 
-            updateLumPreview(image.image, image.width, image.height);
+            if (testCycles > 2){
+                thresholdHorz(image.image, image.width, image.height, 32);
+            }
+            testCycles++;
+            if (testCycles > 4) {
+                runOnUiThread(() -> {
+                    text.setText("\r\nScanning...");
+                });
+                testCycles = 0;
+            }
+
 
             PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(
                     image.image, image.width, image.height,
@@ -260,10 +274,13 @@ public class Main extends Activity
 
             if (binMap == null) return;
 
-            updateThresholdPreview(binMap);
+            //updateThresholdPreview(binMap);
 
-            tryToFindQrCodeInBitmap(binMap);
-            tryToFind128CodeInBitmap(binMap);
+            if (tryToFindQrCodeInBitmap(binMap)) {
+                Log.v(TAG, "Found QR code");
+            } else if (tryToFind128CodeInBitmap(binMap)) {
+                Log.v(TAG, "Found 128 code");
+            }
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
         } finally {
@@ -346,7 +363,7 @@ public class Main extends Activity
 
     private static int[] lumTemp;
     /** Show a greyscale preview of the camera luminance */
-    private void updateLumPreview(byte[] lumMap, int width, int height) {
+    private void updateVideoPreview(byte[] lumMap, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
         if (lumTemp == null || lumTemp.length < lumMap.length) lumTemp = new int[lumMap.length];
