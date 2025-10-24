@@ -19,12 +19,8 @@ import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
-import android.util.Size;
 import android.view.Surface;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -55,11 +51,6 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      * Tag for the {@link Log}.
      */
     private static final String TAG = "Camera2BasicFragment";
-
-    /**
-     * Camera state: Showing camera preview.
-     */
-    private static final int STATE_PREVIEW = 0;
 
     /**
      * Max preview width that is guaranteed by Camera2 API is 1920
@@ -143,13 +134,6 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     private CaptureRequest mPreviewRequest;
 
     /**
-     * The current state of camera state for taking pictures.
-     *
-     * @see #mCaptureCallback
-     */
-    private int mState = STATE_PREVIEW;
-
-    /**
      * A {@link Semaphore} to prevent the app from exiting before closing the camera.
      */
     private final Semaphore mCameraOpenCloseLock = new Semaphore(1);
@@ -209,11 +193,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     /**
      * Sets up member variables related to camera.
      *
-     * @param width  The width of available size for camera preview
-     * @param height The height of available size for camera preview
      */
-    @SuppressWarnings("SuspiciousNameCombination")
-    private void setUpCameraOutputs(int width, int height) {
+    private void setUpCameraOutputs() {
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         try {
             for (String cameraId : manager.getCameraIdList()) {
@@ -232,55 +213,14 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                     continue;
                 }
 
-                // For still image captures, we use the largest available size.
-                Size largest = Collections.max(
-                        Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)),
-                        new CompareSizesByArea());
-
                 // Find out if we need to swap dimension to get the preview size relative to sensor
                 // coordinate.
-                int displayRotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+                //int displayRotation = activity.getWindowManager().getDefaultDisplay().getRotation();
                 //noinspection ConstantConditions
                 mSensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-                boolean swappedDimensions = false;
-                switch (displayRotation) {
-                    case Surface.ROTATION_0:
-                    case Surface.ROTATION_180:
-                        if (mSensorOrientation == 90 || mSensorOrientation == 270) {
-                            swappedDimensions = true;
-                        }
-                        break;
-                    case Surface.ROTATION_90:
-                    case Surface.ROTATION_270:
-                        if (mSensorOrientation == 0 || mSensorOrientation == 180) {
-                            swappedDimensions = true;
-                        }
-                        break;
-                    default:
-                        Log.e(TAG, "Display rotation is invalid: " + displayRotation);
-                }
 
                 Point displaySize = new Point();
                 activity.getWindowManager().getDefaultDisplay().getSize(displaySize);
-                int rotatedPreviewWidth = width;
-                int rotatedPreviewHeight = height;
-                int maxPreviewWidth = displaySize.x;
-                int maxPreviewHeight = displaySize.y;
-
-                if (swappedDimensions) {
-                    rotatedPreviewWidth = height;
-                    rotatedPreviewHeight = width;
-                    maxPreviewWidth = displaySize.y;
-                    maxPreviewHeight = displaySize.x;
-                }
-
-                if (maxPreviewWidth > PREVIEW_WIDTH) {
-                    maxPreviewWidth = PREVIEW_WIDTH;
-                }
-
-                if (maxPreviewHeight > PREVIEW_HEIGHT) {
-                    maxPreviewHeight = PREVIEW_HEIGHT;
-                }
 
                 // Danger, W.R.! Attempting to use too large a preview size could  exceed the camera
                 // bus' bandwidth limitation, resulting in gorgeous previews but the storage of
@@ -304,15 +244,12 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      * Opens the camera specified by mCameraId.
      */
     private void openCamera() {
-        int width = PREVIEW_WIDTH;
-        int height = PREVIEW_HEIGHT;
-
         var permission = activity.checkSelfPermission(Manifest.permission.CAMERA);
         if (permission != PackageManager.PERMISSION_GRANTED) {
             requestCameraPermission();
             return;
         }
-        setUpCameraOutputs(width, height);
+        setUpCameraOutputs();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         try {
             if (!mCameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
@@ -450,19 +387,5 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     public void onImageAvailable(ImageReader reader) {
         // TODO: pull the ImageReader -> Bitmap stuff down here?
         updateTrigger.accept(reader);
-    }
-
-    /**
-     * Compares two {@code Size}s based on their areas.
-     */
-    static class CompareSizesByArea implements Comparator<Size> {
-
-        @Override
-        public int compare(Size lhs, Size rhs) {
-            // We cast here to ensure the multiplications won't overflow
-            return Long.signum((long) lhs.getWidth() * lhs.getHeight() -
-                    (long) rhs.getWidth() * rhs.getHeight());
-        }
-
     }
 }
