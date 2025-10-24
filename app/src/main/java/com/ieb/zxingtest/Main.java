@@ -18,6 +18,7 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
+import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.oned.Code128Reader;
 import com.google.zxing.qrcode.QRCodeReader;
@@ -62,12 +63,12 @@ public class Main extends Activity
 
         luminanceViewer = new ImageView(this);
         thresholdViewer = new ImageView(this);
-        camControl = new CameraFeedController(this, reader -> updateReading(reader));
+        camControl = new CameraFeedController(this, this::updateReading);
 
         root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
         //root.addView(cameraViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
-        root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
-        root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
+        root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
+        root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
 
         text.append("\r\nRunning test. Point camera at a QR code...");
 
@@ -128,9 +129,10 @@ public class Main extends Activity
         return source;
     }
 
+    /** read luminance into a byte array, correcting for relative sensor rotation */
     private byte[] imageToBytes(ImageReader reader) {
-        try (Image image = reader.acquireNextImage()) {
-        //try (Image image = reader.acquireLatestImage()) {
+        //try (Image image = reader.acquireNextImage()) {
+        try (Image image = reader.acquireLatestImage()) {
             if (image == null) return null;
 
             var planes = image.getPlanes();
@@ -151,15 +153,40 @@ public class Main extends Activity
 
             var result = new byte[imgWidth * imgHeight];
 
+            var rot = camControl.Orientation();
             int j = 0;
-            for (int y = 0; y < imgHeight; y++) {
-                var yOff = dataWidth * y;
+            if (rot == 90 || rot == 270){
                 for (int x = 0; x < imgWidth; x++) {
-                    var idx = yOff + x;
-                    result[j++] = data[idx];
-                    //var sample = data[idx] & 0xFF;
-                    //var color = 0x00_01_01_01 * sample;
-                    //colorInts[j++] = 0xFF000000 + color;
+                    for (int y = 0; y < imgHeight; y++) {
+                        var yOff = dataWidth * y;
+                        var idx = yOff + x;
+                        result[j++] = data[idx];
+                    }
+                }
+            } else {
+                for (int y = 0; y < imgHeight; y++) {
+                    var yOff = dataWidth * y;
+                    for (int x = 0; x < imgWidth; x++) {
+                        var idx = yOff + x;
+                        result[j++] = data[idx];
+                    }
+                }
+            }
+
+            if (rot == 90){
+                for (int y = 0; y < imgWidth; y++) {
+                    var yOff = imgHeight * y;
+                    var right = imgHeight - 1;
+                    var left = 0;
+                    while (left < right) {
+                        var l = yOff + left;
+                        var r = yOff + right;
+                        var t = result[l];
+                        result[l] = result[r];
+                        result[r] = t;
+                        left++;
+                        right--;
+                    }
                 }
             }
             return result;
@@ -178,12 +205,19 @@ public class Main extends Activity
             var imgHeight = reader.getHeight();
             var imgWidth = reader.getWidth();
 
+            var rot = camControl.Orientation();
+            if (rot == 90 || rot == 270) {
+                imgHeight = reader.getWidth();
+                imgWidth = reader.getHeight();
+            }
+
             var image = imageToBytes(reader);
             if (image == null) return;
 
             //image = convolution3x3(image, imgWidth, imgHeight, conv_blur);
             //image = convolution3x3(image, imgWidth, imgHeight, conv_v_blur);
-            tryMaskingBarcodes(image, imgWidth, imgHeight);
+            //tryMaskingBarcodes(image, imgWidth, imgHeight);
+            thresholdHorz(image, imgWidth, imgHeight);
             blurVert(image, imgWidth, imgHeight);
 
             // TODO: try a scan-line algorithm to whiten areas without much contrast
@@ -191,7 +225,7 @@ public class Main extends Activity
 
             updateLumPreview(image, imgWidth, imgHeight);
 
-            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(image, imgWidth, imgHeight, 128, 128, imgWidth-256, imgHeight-256, false);
+            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(image, imgWidth, imgHeight, 0, 0, imgWidth, imgHeight, false);
 
             var binMap = convertToBinaryMap(lum);
 
@@ -232,11 +266,11 @@ public class Main extends Activity
     private void tryMaskingBarcodes(byte[] image, int width, int height) {
         int margin = 32;
         int threshold = 4;
+
         for (int y = margin; y < height - margin; y++) {
             var yOff = y * width;
 
             // build a contrast mask
-            int contrastMax = 0;
             for (int x = margin; x < width-margin; x++) {
                 var idx = yOff + x;
 
@@ -282,41 +316,83 @@ public class Main extends Activity
                 if (sample < 200 && sample > max) max = sample;
 
             }
-
-            // re-threshold
-            /*int centre = max - ((max-min)/2);
-            for (int x = margin; x < width-margin; x++) {
-                var idx = yOff + x;
-                var sample = image[idx] & 0xFF; // Java byte slinging is a thing...
-
-                if (sample < centre) image[idx] = 0;
-                else image[idx] = -1;
-            }*/
         }
     }
 
     /** Blur vertically only */
     private void blurVert(byte[] image, int width, int height) {
-        int margin = 2;
-        for (int y = margin; y < height-margin; y++) {
-            var yOff = y * width;
-            for (int x = margin; x < width-margin; x++) {
-                var idx = yOff + x;
+        final int margin = 4;
+        var tmp = new byte[image.length];
 
-                var b0 = image[idx - width] & 0xFF;
-                var b1 = image[idx + width] & 0xFF;
-                var b2 = image[idx + width + width] & 0xFF;
-                //var r0 = image[idx - 1] & 0xFF;
-                //var r1 = image[idx + 1] & 0xFF;
-                //var r2 = image[idx + 2] & 0xFF;
-                var c = image[idx] & 0xFF;
+        for (int x = margin; x < width - margin; x++) {
+            int lead = x;
+            int trail = x;
+            int mid = x + (width * (margin/2));
+            int sum = 0;
 
-                var n = (b0+b1+b2+c)/4;// blur only
-                //var n = (b1+b2+c) - r1 - r2; // blur and sharpen
+            for (int i = 0; i < margin; i++) {
+                sum += image[lead] & 0xFF;
+                lead += width;
+            }
 
-                image[idx] = pin(n); // feedback to strengthen effect
+            for (int y = margin; y < height - margin; y++) {
+                tmp[mid] = pin(sum / margin);
+
+                int incoming = image[lead] & 0xFF;
+                int outgoing = image[trail] & 0xFF;
+
+                sum += incoming - outgoing;
+
+                lead += width;
+                trail += width;
+                mid += width;
             }
         }
+
+        System.arraycopy(tmp, 0, image, 0, image.length);
+    }
+
+    /** threshold pixel based on a running average */
+    private void thresholdHorz(byte[] image, int width, int height){
+        int margin = 16;
+        var tmp = new byte[image.length];
+
+        for (int y = margin; y < height - margin; y++) {
+            int yOff = y * width;
+            int sum = 0;
+            int lead = yOff;
+            int trail = yOff;
+            int mid = yOff + (margin / 2);
+
+            for (int i = 0; i < margin; i++) {
+                sum += image[lead] & 0xFF;
+                lead ++;
+            }
+
+            // decide running average
+            for (int x = margin; x < width-margin; x++) {
+                var actual = image[mid] & 0xFF;
+                var target = sum / margin;
+
+                // Don't turn white areas into black lines or vice-versa:
+                if (target > 224) target = 224;
+                if (target < 32) target = 32;
+
+                if (actual < target) tmp[mid] = pin(actual - 64);
+                else tmp[mid] = pin(actual + 64);
+
+                int incoming = image[lead] & 0xFF;
+                int outgoing = image[trail] & 0xFF;
+
+                sum += incoming - outgoing;
+
+                lead++;
+                trail++;
+                mid++;
+            }
+        }
+
+        System.arraycopy(tmp, 0, image, 0, image.length);
     }
 
     private static final int[] conv_edge = {
@@ -376,9 +452,16 @@ public class Main extends Activity
         return result;
     }
 
+
+    private byte pin(long v) {
+        if (v < 0) return 0x00;
+        if (v > 254) return (byte)0xFF;
+        return (byte) v;
+    }
+
     private byte pin(int v) {
-        if (v < 0) return 0;
-        if (v > 255) return (byte)255;
+        if (v < 0) return 0x00;
+        if (v > 254) return (byte)0xFF;
         return (byte) v;
     }
 
@@ -397,10 +480,11 @@ public class Main extends Activity
         }
 
         Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
-        runOnUiThread(()-> luminanceViewer.setImageBitmap(bitmap));
-
-        if (prevLumBitmap != null) prevLumBitmap.recycle();
-        prevLumBitmap = bitmap;
+        runOnUiThread(()-> {
+            luminanceViewer.setImageBitmap(bitmap);
+            if (prevLumBitmap != null) prevLumBitmap.recycle();
+            prevLumBitmap = bitmap;
+        });
     }
 
     private void updateLumPreview(int[] colorInts, int width, int height) {
@@ -425,10 +509,12 @@ public class Main extends Activity
         }
 
         Bitmap finalBitmap = bitmap;
-        runOnUiThread(()-> thresholdViewer.setImageBitmap(finalBitmap));
+        runOnUiThread(() -> {
+            thresholdViewer.setImageBitmap(finalBitmap);
+            if (prevThreshBitmap != null) prevThreshBitmap.recycle();
+            prevThreshBitmap = finalBitmap;
+        });
 
-        if (prevThreshBitmap != null) prevThreshBitmap.recycle();
-        prevThreshBitmap = bitmap;
     }
 
 

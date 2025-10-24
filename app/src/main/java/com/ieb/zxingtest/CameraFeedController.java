@@ -182,6 +182,11 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      */
     private boolean mFlashSupported;
 
+    /** Camera orientation relative to screen (should be 0..270 in degrees) */
+    public int Orientation(){
+        return mSensorOrientation;
+    }
+
     /**
      * Orientation of the camera sensor
      */
