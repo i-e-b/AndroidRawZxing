@@ -13,13 +13,13 @@ public class HorizontalAverageBinarizer extends Binarizer {
      * Create a running-threshold binarizer
      *
      * @param source luminance image source
-     * @param radius threshold radius
-     * @param bias   negative for lighter image, positive for darker. Zero is no bias.
+     * @param scale scale of running average. Adjust to pick out different detail levels. 64 or 32 are good defaults
+     * @param exposure   negative for lighter image, positive for darker. Zero is no bias. Between -16 and 16 seem to work in most cases.
      */
-    protected HorizontalAverageBinarizer(LuminanceSource source, int radius, int bias) {
+    protected HorizontalAverageBinarizer(LuminanceSource source, int scale, int exposure) {
         super(source);
-        this.radius = radius;
-        this.bias = bias;
+        this.radius = scale;
+        this.bias = exposure;
     }
 
     private byte[] rowLuminances;
@@ -57,6 +57,7 @@ public class HorizontalAverageBinarizer extends Binarizer {
 
             // don't let the target be too extreme (this stops us turning white rows into black)
             if (target > 192) target = 192;
+            if (target < 32) target = 32;
 
             // Decide what side of the threshold we are on
             if (actual <= target) row.set(x);
@@ -102,6 +103,7 @@ public class HorizontalAverageBinarizer extends Binarizer {
 
                 // don't let the target be too extreme
                 if (target > 192) target = 192;
+                if (target < 32) target = 32;
 
                 // Decide what side of the threshold we are on
                 if (actual <= target) matrix.set(x, y);

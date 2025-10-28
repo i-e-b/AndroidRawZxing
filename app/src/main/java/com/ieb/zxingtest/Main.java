@@ -89,8 +89,50 @@ public class Main extends Activity
         return null;
     }
 
-    private static int testCycles = 0;
+    private static final int SCALE_MAX = 64;
+    private static final int SCALE_MIN = 8;
+    private static final int EXPOSURE_MAX = 16;
+    private static final int EXPOSURE_MIN = -16;
+
+    private static boolean testCycle = false;
     private static boolean invert = false;
+    private static int habScale = SCALE_MAX;
+    private static int habExposure = EXPOSURE_MAX;
+
+    /** Continually cycle through the various settings of HorizontalAverageBinarizer,
+     * with a standard HybridBinarizer run between each one */
+    private static Binarizer pickThresholdParameters(LuminanceSource lum) {
+        Binarizer thresholder;
+        testCycle = true;//!testCycle;
+
+        if (testCycle) {
+
+            // Set the parameters beforehand, so the preview is accurate
+           // if (invert) { // try inverted image
+            invert = false;
+                habExposure -= 1; // cycle through exposure levels
+                if (habExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
+                    habExposure = EXPOSURE_MAX; // ...reset...
+                    habScale /= 2;              // ...and cycle the scale
+
+                    if (habScale < SCALE_MIN) { // when scale has been cycled...
+                        habScale = SCALE_MAX;   // ...reset
+                    }
+                }
+            //} else {
+            //    invert = true;
+            //}
+
+            // HAB thresholder
+            if (invert) lum = lum.invert();
+            thresholder = new HorizontalAverageBinarizer(lum, habScale, habExposure);
+
+        } else { // Zxing Hybrid thresholder
+            if (invert) lum = lum.invert();
+            thresholder = new HybridBinarizer(lum);
+        }
+        return thresholder;
+    }
 
     /** Try to read a QR code from the current texture */
     private void updateReading(ByteImage image) {
@@ -106,58 +148,16 @@ public class Main extends Activity
                     image.image, image.width, image.height,
                     0, 0, image.width, image.height, false);
 
-            if (invert) lum = lum.invert();
-
-            Binarizer thresholder;
-
             // Rotate around a set of different image transforms.
             // Hopefully at least one of them will capture correctly.
-            switch (testCycles++) {
-                // HAB thresholder
-                case 0:
-                    thresholder = new HorizontalAverageBinarizer(lum, 32, -4);
-                    break;
-                case 1:
-                    thresholder = new HorizontalAverageBinarizer(lum, 32, -2);
-                    break;
-                case 2:
-                    thresholder = new HorizontalAverageBinarizer(lum, 32, 0);
-                    break;
-                case 3:
-                    thresholder = new HorizontalAverageBinarizer(lum, 32, 2);
-                    break;
-
-                case 4:
-                    thresholder = new HorizontalAverageBinarizer(lum, 64, -4);
-                    break;
-                case 5:
-                    thresholder = new HorizontalAverageBinarizer(lum, 64, -2);
-                    break;
-                case 6:
-                    thresholder = new HorizontalAverageBinarizer(lum, 64, 0);
-                    break;
-                case 7:
-                    thresholder = new HorizontalAverageBinarizer(lum, 64, 2);
-                    break;
-
-                // Zxing Hybrid thresholder
-                case 8:
-                    thresholder = new HybridBinarizer(lum);
-                    break;
-
-                default:
-                    testCycles = 0;
-                    invert = !invert;
-                    thresholder = new HorizontalAverageBinarizer(lum, 32, -2);
-                    break;
-            }
+            Binarizer thresholder = pickThresholdParameters(lum);
 
             // Convert greyscale to B&W
             var binMap = new BinaryBitmap(thresholder);
 
             // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
-            if (result != null) {
+            /*if (result != null)*/ { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
                 // Show a snap-shot of the thresholded image that worked
                 updateThresholdPreview(binMap, result, invert);
             }
