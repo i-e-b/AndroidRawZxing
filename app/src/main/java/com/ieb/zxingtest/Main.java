@@ -3,6 +3,7 @@ package com.ieb.zxingtest;
 import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.widget.LinearLayout.VERTICAL;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.os.Bundle;
@@ -20,9 +21,10 @@ import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.HybridBinarizer;
 
-/** @noinspection NullableProblems*/
-public class Main extends Activity
-{
+/**
+ * @noinspection NullableProblems
+ */
+public class Main extends Activity {
     private final String TAG = "MainAct";
     private CameraFeedController camControl;
     private ImageView thresholdViewer;
@@ -40,7 +42,7 @@ public class Main extends Activity
         zxingReader = new MultiFormatReader();
 
         // Set up camera-to-bitmap feed
-        camControl = new CameraFeedController(this, 1024, 768, 64, 256, this::updateReading);
+        camControl = new CameraFeedController(this, 1024, 768, 32, 256, this::updateReading);
 
         // Setup layout
         updateInProgress = false;
@@ -53,9 +55,9 @@ public class Main extends Activity
         luminanceViewer = new ImageView(this);
         thresholdViewer = new ImageView(this);
 
-        root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0,1));
-        root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
-        root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0,3));
+        root.addView(text, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1));
+        root.addView(luminanceViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 3));
+        root.addView(thresholdViewer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 3));
 
         text.append("\r\nRunning test. Point camera at a QR code or Code128 bar code...");
 
@@ -63,6 +65,7 @@ public class Main extends Activity
         camControl.onResume();
     }
 
+    @SuppressLint("SetTextI18n")
     private Result tryToFindBarCodeInBitmap(BinaryBitmap binMap) {
         if (binMap == null) {
             Log.w(TAG, "Invalid binMap");
@@ -75,7 +78,11 @@ public class Main extends Activity
 
 
             runOnUiThread(() -> {
-                text.setText("\r\nFound Barcode");
+                if (testCycle) {
+                    text.setText("\r\nFound Barcode (" + habScale + ", " + habExposure + ")");
+                } else {
+                    text.setText("\r\nFound Barcode (hybrid)");
+                }
                 text.append("\r\nBar code result: " + result.toString());
                 text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
             });
@@ -89,28 +96,30 @@ public class Main extends Activity
         return null;
     }
 
-    private static final int SCALE_MAX = 64;
-    private static final int SCALE_MIN = 8;
-    private static final int EXPOSURE_MAX = 16;
-    private static final int EXPOSURE_MIN = -16;
+    private static final int SCALE_MAX = 128;
+    private static final int SCALE_MIN = 16;
+    private static final int EXPOSURE_MAX = 8;
+    private static final int EXPOSURE_MIN = -12;
 
     private static boolean testCycle = false;
     private static boolean invert = false;
     private static int habScale = SCALE_MAX;
     private static int habExposure = EXPOSURE_MAX;
 
-    /** Continually cycle through the various settings of HorizontalAverageBinarizer,
-     * with a standard HybridBinarizer run between each one */
-    private static Binarizer pickThresholdParameters(LuminanceSource lum) {
+    /**
+     * Continually cycle through the various settings of HorizontalAverageBinarizer,
+     * with a standard HybridBinarizer run between each one
+     */
+    private Binarizer pickThresholdParameters(LuminanceSource lum) {
         Binarizer thresholder;
-        testCycle = true;//!testCycle;
+        testCycle = !testCycle;
 
-        if (testCycle) {
+        if (testCycle) { // alternate between HAB and Zxing hybrid
 
             // Set the parameters beforehand, so the preview is accurate
-           // if (invert) { // try inverted image
-            invert = false;
-                habExposure -= 1; // cycle through exposure levels
+            if (invert) { // try inverted image
+                invert = false;
+                habExposure -= 2; // cycle through exposure levels
                 if (habExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
                     habExposure = EXPOSURE_MAX; // ...reset...
                     habScale /= 2;              // ...and cycle the scale
@@ -119,9 +128,9 @@ public class Main extends Activity
                         habScale = SCALE_MAX;   // ...reset
                     }
                 }
-            //} else {
-            //    invert = true;
-            //}
+            } else {
+                invert = true;
+            }
 
             // HAB thresholder
             if (invert) lum = lum.invert();
@@ -134,7 +143,9 @@ public class Main extends Activity
         return thresholder;
     }
 
-    /** Try to read a QR code from the current texture */
+    /**
+     * Try to read a QR code from the current texture
+     */
     private void updateReading(ByteImage image) {
         if (updateInProgress) {
             return; // QR scanner is not keeping up with camera preview rate. Not really a problem.
@@ -157,7 +168,7 @@ public class Main extends Activity
 
             // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
-            /*if (result != null)*/ { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
+            if (result != null) { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
                 // Show a snap-shot of the thresholded image that worked
                 updateThresholdPreview(binMap, result, invert);
             }
@@ -171,7 +182,9 @@ public class Main extends Activity
     Bitmap prevLumBitmap = null;
     private static int[] lumTemp;
 
-    /** Show a greyscale preview of the camera luminance */
+    /**
+     * Show a greyscale preview of the camera luminance
+     */
     private void updateVideoPreview(byte[] lumMap, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
@@ -187,11 +200,14 @@ public class Main extends Activity
         prevLumBitmap = copyColorIntsToBitmap(prevLumBitmap, lumTemp, width, height, config);
 
         Bitmap finalBitmap = prevLumBitmap;
-        runOnUiThread(()-> luminanceViewer.setImageBitmap(finalBitmap));
+        runOnUiThread(() -> luminanceViewer.setImageBitmap(finalBitmap));
     }
 
     Bitmap threshBitmap = null;
-    /** Show a black&white preview of the barcode scanner thresholded map */
+
+    /**
+     * Show a black&white preview of the barcode scanner thresholded map
+     */
     private void updateThresholdPreview(BinaryBitmap binMap, Result result, boolean inverted) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
@@ -239,16 +255,18 @@ public class Main extends Activity
         }
     }
 
-    /** Copy "ColorInt" pixel to a bitmap. The bitmap is re-created if null or the wrong size */
+    /**
+     * Copy "ColorInt" pixel to a bitmap. The bitmap is re-created if null or the wrong size
+     */
     private Bitmap copyColorIntsToBitmap(Bitmap target, int[] pixels, int width, int height, Bitmap.Config config) {
         if (target == null) {
             var tmp = Bitmap.createBitmap(pixels, width, height, config);
-            target = tmp.copy(Bitmap.Config.ARGB_8888,true);
+            target = tmp.copy(Bitmap.Config.ARGB_8888, true);
             tmp.recycle();
-        } else if (differentSize(target, width, height)){
+        } else if (differentSize(target, width, height)) {
             target.recycle();
             var tmp = Bitmap.createBitmap(pixels, width, height, config);
-            target = tmp.copy(Bitmap.Config.ARGB_8888,true);
+            target = tmp.copy(Bitmap.Config.ARGB_8888, true);
             tmp.recycle();
         } else {
             target.setPixels(pixels, 0, width, 0, 0, width, height);
@@ -261,7 +279,9 @@ public class Main extends Activity
     }
 
 
-    /** This is triggered if we had to request permission from the user */
+    /**
+     * This is triggered if we had to request permission from the user
+     */
     @Override
     public void onRequestPermissionsResult(int requestCode,
                                            String[] permissions,
@@ -272,14 +292,18 @@ public class Main extends Activity
         camControl.onResume();
     }
 
-    /** pause camera control */
+    /**
+     * pause camera control
+     */
     @Override
     protected void onPause() {
         camControl.onPause();
         super.onPause();
     }
 
-    /** resume camera control */
+    /**
+     * resume camera control
+     */
     @Override
     protected void onResume() {
         camControl.onResume();

@@ -24,6 +24,9 @@ public class HorizontalAverageBinarizer extends Binarizer {
 
     private byte[] rowLuminances;
 
+    private static final int UPPER_LIMIT = 251;
+    private static final int LOWER_LIMIT = 4;
+
     @Override
     public BitArray getBlackRow(int y, BitArray row) {
         LuminanceSource source = getLuminanceSource();
@@ -56,11 +59,11 @@ public class HorizontalAverageBinarizer extends Binarizer {
             int target = sum / diam;
 
             // don't let the target be too extreme (this stops us turning white rows into black)
-            if (target > 192) target = 192;
-            if (target < 32) target = 32;
+            if (target > UPPER_LIMIT) target = UPPER_LIMIT;
+            if (target < LOWER_LIMIT) target = LOWER_LIMIT;
 
             // Decide what side of the threshold we are on
-            if (actual <= target) row.set(x);
+            if (actual < target) row.set(x);
 
             // update running average
             int xr = Math.min(x + radius, right);
@@ -102,11 +105,11 @@ public class HorizontalAverageBinarizer extends Binarizer {
                 int target = sum / diam;
 
                 // don't let the target be too extreme
-                if (target > 192) target = 192;
-                if (target < 32) target = 32;
+                if (target > UPPER_LIMIT) target = UPPER_LIMIT;
+                if (target < LOWER_LIMIT) target = LOWER_LIMIT;
 
                 // Decide what side of the threshold we are on
-                if (actual <= target) matrix.set(x, y);
+                if (actual < target) matrix.set(x, y);
 
                 // update running average
                 int xr = Math.min(x + radius, right);
