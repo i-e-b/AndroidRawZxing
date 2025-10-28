@@ -1,30 +1,30 @@
 package com.ieb.zxingtest;
 
-import android.util.Log;
-
 import com.google.zxing.Binarizer;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.common.BitArray;
 import com.google.zxing.common.BitMatrix;
 
 public class UnsharpMaskBinarizer extends Binarizer {
-    private final int radius;
+    private final int scale;
     private final int bias;
 
     /**
      * Create a running-threshold binarizer
      *
      * @param source Luminance image source
-     * @param scale Scale of running average. Adjust to pick out different detail levels. 64 or 32 are good defaults
+     * @param scale Scale of running average. Adjust to pick out different detail levels.
+     *              Range 1..8 inclusive. 5 or 6 are good defaults.
      * @param exposure Negative for lighter image, positive for darker. Zero is no bias. Between -16 and 16 seem to work in most cases.
      */
     protected UnsharpMaskBinarizer(LuminanceSource source, int scale, int exposure) {
         super(source);
-        this.radius = scale;
+        this.scale = scale;
         this.bias = exposure;
     }
 
-    private byte[] rowLuminances;
+    private static byte[] rowLuminances = null;
+    private static int[] colLuminances = null;
 
     private static final int UPPER_LIMIT = 251;
     private static final int LOWER_LIMIT = 4;
@@ -45,11 +45,10 @@ public class UnsharpMaskBinarizer extends Binarizer {
         }
         var srcRow = source.getRow(y, rowLuminances);
 
-        int diam = radius * 2;
+        int radius = 1 << scale;
+        int diam = scale + 1;
         int right = width - 1;
         int sum = 0;
-
-        Log.i("UMB", "1D row requested");
 
         // feed in
         for (int i = -radius; i < radius; i++) {
@@ -61,7 +60,7 @@ public class UnsharpMaskBinarizer extends Binarizer {
         for (int x = 0; x < width; x++) {
             // calculate threshold values
             int actual = (srcRow[x] & 0xFF) - bias;
-            int target = sum / diam;
+            int target = sum >>> diam;
 
             // don't let the target be too extreme (this stops us turning white rows into black)
             if (target > UPPER_LIMIT) target = UPPER_LIMIT;
@@ -82,8 +81,6 @@ public class UnsharpMaskBinarizer extends Binarizer {
         return row;
     }
 
-    private int[] tmp = null;
-
     /** Get a whole image. This is optimised for 2D bar codes, and averages in X and Y bases */
     @Override
     public BitMatrix getBlackMatrix() {
@@ -94,9 +91,10 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
         byte[] image = source.getMatrix();
 
-        if (tmp == null || tmp.length < image.length) tmp = new int[image.length+32];
+        if (colLuminances == null || colLuminances.length < image.length) colLuminances = new int[image.length+32];
 
-        int diam = radius * 2;
+        int radius = 1 << scale;
+        int diam = scale + 1;
         int right = width - 1;
         int span = width * radius;
         int leadIn = (-radius) * width;
@@ -114,7 +112,7 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
             row = 0;
             for (int y = 0; y < height; y++) {
-                tmp[row + x] = sum / diam;
+                colLuminances[row + x] = sum >>> diam;
 
                 // update running average
                 int yr = Math.min(row + span, image.length);
@@ -134,14 +132,14 @@ public class UnsharpMaskBinarizer extends Binarizer {
             // feed in
             for (int i = -radius; i < radius; i++) {
                 int x = Math.max(i, 0);
-                sum += tmp[yOff + x];
+                sum += colLuminances[yOff + x];
             }
 
             // running average threshold
             for (int x = 0; x < width; x++) {
                 // calculate threshold values
                 int actual = (image[yOff + x] & 0xFF) - bias;
-                int target = sum / diam;
+                int target = sum >>> diam;
 
                 // don't let the target be too extreme
                 if (target > UPPER_LIMIT) target = UPPER_LIMIT;
@@ -153,8 +151,8 @@ public class UnsharpMaskBinarizer extends Binarizer {
                 // update running average
                 int xr = Math.min(x + radius, right);
                 int xl = Math.max(x - radius, 0);
-                int incoming = tmp[yOff + xr];
-                int outgoing = tmp[yOff + xl];
+                int incoming = colLuminances[yOff + xr];
+                int outgoing = colLuminances[yOff + xl];
 
                 sum += incoming - outgoing;
             }

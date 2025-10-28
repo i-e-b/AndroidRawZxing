@@ -96,9 +96,9 @@ public class Main extends Activity {
         return null;
     }
 
-    private static final int SCALE_MAX = 128;
-    private static final int SCALE_MIN = 8;
-    private static final int EXPOSURE_MAX = 8;
+    private static final int SCALE_MAX = 7; // 128-pixel spans
+    private static final int SCALE_MIN = 3; // 8-pixel spans
+    private static final int EXPOSURE_MAX = 10;
     private static final int EXPOSURE_MIN = -18;
 
     private static boolean testCycle = false;
@@ -112,25 +112,25 @@ public class Main extends Activity {
      */
     private Binarizer pickThresholdParameters(LuminanceSource lum) {
         Binarizer thresholder;
-        testCycle = true;//!testCycle;
+        testCycle = !testCycle;
 
         if (testCycle) { // alternate between HAB and Zxing hybrid
 
             // Set the parameters beforehand, so the preview is accurate
-            //if (invert) { // try inverted image
+            if (invert) { // try inverted image
                 invert = false;
                 testExposure -= 2; // cycle through exposure levels
                 if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
                     testExposure = EXPOSURE_MAX; // ...reset...
-                    testScale /= 2;              // ...and cycle the scale
+                    testScale -= 1;              // ...and cycle the scale
 
                     if (testScale < SCALE_MIN) { // when scale has been cycled...
                         testScale = SCALE_MAX;   // ...reset
                     }
                 }
-            //} else {
-            //    invert = true;
-            //}
+            } else {
+                invert = true;
+            }
 
             // HAB thresholder
             if (invert) lum = lum.invert();
