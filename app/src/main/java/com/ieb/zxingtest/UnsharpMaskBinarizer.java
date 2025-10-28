@@ -98,30 +98,32 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
         int diam = radius * 2;
         int right = width - 1;
-        int bottom = height - 1;
+        int span = width * radius;
+        int leadIn = (-radius) * width;
 
         for (int x = 0; x < width; x++) { // for each column
             int sum = 0;
 
             // feed in
+            int row = leadIn;
             for (int i = -radius; i < radius; i++) {
-                int y = Math.max(i, 0);
-                int yOff = y * width;
-                sum += image[yOff + x] & 0xFF;
+                int y = Math.max(row, 0);
+                sum += image[y + x] & 0xFF;
+                row += width;
             }
 
+            row = 0;
             for (int y = 0; y < height; y++) {
-                int yOff = y * width;
-
-                tmp[yOff + x] = sum / diam;
+                tmp[row + x] = sum / diam;
 
                 // update running average
-                int yr = Math.min(y + radius, bottom) * width;
-                int yl = Math.max(y - radius, 0) * width;
+                int yr = Math.min(row + span, image.length);
+                int yl = Math.max(row - span, 0);
                 int incoming = image[yr + x] & 0xFF;
                 int outgoing = image[yl + x] & 0xFF;
 
                 sum += incoming - outgoing;
+                row += width;
             }
         }
 

@@ -117,7 +117,7 @@ public class Main extends Activity {
         if (testCycle) { // alternate between HAB and Zxing hybrid
 
             // Set the parameters beforehand, so the preview is accurate
-            if (invert) { // try inverted image
+            //if (invert) { // try inverted image
                 invert = false;
                 testExposure -= 2; // cycle through exposure levels
                 if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
@@ -128,9 +128,9 @@ public class Main extends Activity {
                         testScale = SCALE_MAX;   // ...reset
                     }
                 }
-            } else {
-                invert = true;
-            }
+            //} else {
+            //    invert = true;
+            //}
 
             // HAB thresholder
             if (invert) lum = lum.invert();
