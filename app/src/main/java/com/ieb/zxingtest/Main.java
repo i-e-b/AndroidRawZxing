@@ -12,14 +12,14 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.google.zxing.BarcodeFormat;
 import com.google.zxing.Binarizer;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
-import com.google.zxing.MultiFormatReader;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
+import com.google.zxing.PresetListReader;
 import com.google.zxing.Result;
-import com.google.zxing.common.HybridBinarizer;
 
 /**
  * @noinspection NullableProblems
@@ -32,14 +32,18 @@ public class Main extends Activity {
     private TextView text;
 
     private volatile boolean updateInProgress;
-    private MultiFormatReader zxingReader;
+    private PresetListReader zxingReader;
 
     @Override
     protected void onCreate(Bundle bundle) {
         super.onCreate(bundle);
 
         // Set up ZX-ing reader
-        zxingReader = new MultiFormatReader();
+        zxingReader = new PresetListReader();
+        zxingReader.add(BarcodeFormat.QR_CODE);
+        zxingReader.add(BarcodeFormat.CODE_128);
+        zxingReader.add(BarcodeFormat.ITF);
+        zxingReader.add(BarcodeFormat.DATA_MATRIX);
 
         // Set up camera-to-bitmap feed
         camControl = new CameraFeedController(this, 1024, 768, 32, 256, this::updateReading);
@@ -75,15 +79,11 @@ public class Main extends Activity {
         try {
             zxingReader.reset();
             var result = zxingReader.decode(binMap);
-
+            if (result == null) return null;
 
             runOnUiThread(() -> {
-                if (testCycle) {
-                    text.setText("\r\nFound Barcode (" + testScale + ", " + testExposure + ")");
-                } else {
-                    text.setText("\r\nFound Barcode (hybrid)");
-                }
-                text.append("\r\nBar code result: " + result.toString());
+                text.setText("\r\nFound Barcode (" + testScale + ", " + testExposure + ")");
+                text.append("\r\nBar code result: " + result);
                 text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
             });
             return result;
@@ -96,51 +96,36 @@ public class Main extends Activity {
         return null;
     }
 
+    // Search range. Expand for slower but more extensive checks
     private static final int SCALE_MAX = 7; // 128-pixel spans
-    private static final int SCALE_MIN = 3; // 8-pixel spans
-    private static final int EXPOSURE_MAX = 10;
-    private static final int EXPOSURE_MIN = -18;
+    private static final int SCALE_MIN = 4; // 16-pixel spans
+    private static final int EXPOSURE_MAX = 4;
+    private static final int EXPOSURE_MIN = -8;
 
-    private static boolean testCycle = false;
     private static boolean invert = false;
     private static int testScale = SCALE_MAX;
     private static int testExposure = EXPOSURE_MAX;
 
     /**
-     * Continually cycle through the various settings of HorizontalAverageBinarizer,
-     * with a standard HybridBinarizer run between each one
+     * Continually cycle through the various settings of UnsharpMaskBinarizer
      */
     private Binarizer pickThresholdParameters(LuminanceSource lum) {
-        Binarizer thresholder;
-        testCycle = !testCycle;
+        // Set the parameters beforehand, so the preview is accurate
+        invert = !invert; // Alternate inverted and not
+        if (invert) { // after trying inverted, change parameters
+            testExposure -= 2; // cycle through exposure levels
+            if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
+                testExposure = EXPOSURE_MAX; // ...reset...
+                testScale -= 1;              // ...and cycle the scale
 
-        if (testCycle) { // alternate between HAB and Zxing hybrid
-
-            // Set the parameters beforehand, so the preview is accurate
-            if (invert) { // try inverted image
-                invert = false;
-                testExposure -= 2; // cycle through exposure levels
-                if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
-                    testExposure = EXPOSURE_MAX; // ...reset...
-                    testScale -= 1;              // ...and cycle the scale
-
-                    if (testScale < SCALE_MIN) { // when scale has been cycled...
-                        testScale = SCALE_MAX;   // ...reset
-                    }
+                if (testScale < SCALE_MIN) { // when scale has been cycled...
+                    testScale = SCALE_MAX;   // ...reset
                 }
-            } else {
-                invert = true;
             }
-
-            // HAB thresholder
-            if (invert) lum = lum.invert();
-            thresholder = new UnsharpMaskBinarizer(lum, testScale, testExposure);
-
-        } else { // Zxing Hybrid thresholder
-            if (invert) lum = lum.invert();
-            thresholder = new HybridBinarizer(lum);
         }
-        return thresholder;
+
+        // UMB thresholder
+        return new UnsharpMaskBinarizer(lum, invert, testScale, testExposure);
     }
 
     /**
@@ -169,8 +154,8 @@ public class Main extends Activity {
             // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
             //if (result != null) { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
-                // Show a snap-shot of the thresholded image that worked
-                updateThresholdPreview(binMap, result, invert);
+            // Show a snap-shot of the thresholded image that worked
+            updateThresholdPreview(binMap, result, invert);
             //}
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
