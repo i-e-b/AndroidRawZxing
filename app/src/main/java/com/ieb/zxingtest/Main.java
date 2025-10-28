@@ -5,8 +5,6 @@ import static android.widget.LinearLayout.VERTICAL;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
-import android.media.Image;
-import android.media.ImageReader;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.ImageView;
@@ -18,6 +16,7 @@ import com.google.zxing.LuminanceSource;
 import com.google.zxing.MultiFormatReader;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
+import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 
@@ -44,7 +43,7 @@ public class Main extends Activity
         zxingReader = new MultiFormatReader();
 
         // Set up camera-to-bitmap feed
-        camControl = new CameraFeedController(this, 1024, 768, this::updateReading);
+        camControl = new CameraFeedController(this, 1024, 768, 64, 256, this::updateReading);
 
         // Setup layout
         updateInProgress = false;
@@ -67,29 +66,30 @@ public class Main extends Activity
         camControl.onResume();
     }
 
-    private boolean tryToFindBarCodeInBitmap(BinaryBitmap binMap) {
+    private Result tryToFindBarCodeInBitmap(BinaryBitmap binMap) {
         if (binMap == null) {
             Log.w(TAG, "Invalid binMap");
-            return false;
+            return null;
         }
 
         try {
             zxingReader.reset();
             var result = zxingReader.decode(binMap);
 
+
             runOnUiThread(() -> {
                 text.setText("\r\nFound Barcode");
                 text.append("\r\nBar code result: " + result.toString());
                 text.append("\r\nBar code type: " + result.getBarcodeFormat().toString());
             });
-            return true;
+            return result;
         } catch (com.google.zxing.NotFoundException nf) {
-            // No QR code found. This is fine
+            // No code found. This is fine
         } catch (Exception e) {
             // If the capture is blurry or not at a good angle, we probably get a checksum error here.
             Log.w(TAG, "Could not read bar-code: "+e);
         }
-        return false;
+        return null;
     }
 
     /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
@@ -100,126 +100,15 @@ public class Main extends Activity
         return source;
     }
 
-    private static byte[] imageTmp;
-    private static byte[] imageSrc;
-    /** read luminance into a byte array, correcting for relative sensor rotation */
-    private ByteImage imageToBytes(ImageReader reader, int insetX, int insetY) {
-        try (Image image = reader.acquireNextImage()) {
-        //try (Image image = reader.acquireLatestImage()) {
-            if (image == null) return null;
-
-            var planes = image.getPlanes();
-
-            if (planes == null || planes.length < 1) {
-                Log.w(TAG, "Invalid image planes");
-                return null;
-            }
-
-            // Read plane into temp buffer
-            var yPlane = planes[0];
-            var buffer = yPlane.getBuffer();
-            var bufferSize = buffer.remaining();
-            if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
-            var data = imageTmp;
-            buffer.get(data);
-
-            // Get parameters of the plane
-            var srcWidth = image.getWidth();
-            var srcHeight = image.getHeight();
-            var dataWidth = yPlane.getRowStride();
-
-            // Get parameter of output
-            var rot = camControl.Orientation();
-            var dstWidth = srcWidth;
-            var dstHeight = srcHeight;
-            if (rot == 90 || rot == 270){
-                //noinspection SuspiciousNameCombination
-                dstWidth = srcHeight;
-                //noinspection SuspiciousNameCombination
-                dstHeight = srcWidth;
-            }
-            dstWidth -= insetX * 2;
-            dstHeight -= insetY * 2;
-
-            // Ensure the final output is ready
-            var requiredSize = srcWidth * srcHeight;
-            if (imageSrc == null || imageSrc.length < requiredSize) {imageSrc = new byte[requiredSize];}
-            var pkg = new ByteImage();
-            pkg.image = imageSrc;
-            pkg.width = dstWidth;
-            pkg.height = dstHeight;
-
-            // Copy from Y-plane into final image,
-            // taking into account margins and rotations
-
-            if (rot == 0){ // no flips
-                int outp = 0;
-                for (int y = 0; y < dstHeight; y++) {
-                    var yOff = dataWidth * (y+ insetY);
-
-                    // Copy a scan line
-                    for (int x = 0; x < dstWidth; x++) {
-                        var idx = yOff + x + insetX;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 180){ // Flip horz and vert
-                int outp = 0;
-                for (int y = dstHeight-1; y >= 0; y--) {
-                    var yOff = dataWidth * (y+ insetY);
-
-                    // Copy a scan line
-                    for (int x = dstWidth - 1; x >= 0; x--) {
-                        var idx = yOff + x + insetX;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 90) { // copy columns into rows, and flip y
-                int outp = 0;
-                for (int x = 0; x < dstHeight; x++) {
-
-                    // Copy a scan line
-                    for (int y = dstWidth-1; y >= 0; y--) {
-                        var yy = y + insetX;
-                        var yOff = dataWidth * (yy);
-                        var idx = yOff + x + insetY;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 270) { // copy columns into rows
-                int outp = 0;
-                for (int x = 0; x < dstHeight; x++) {
-
-                    // Copy a scan line
-                    for (int y = 0; y < dstWidth; y++) {
-                        var yOff = dataWidth * (y + insetX);
-                        var idx = yOff + x + insetY;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            }
-
-            return pkg;
-        } catch (Exception e){
-            Log.e(TAG, "Failed to read camera capture: " + e);
-            return null;
-        }
-    }
-
     private static int testCycles = 0;
     /** Try to read a QR code from the current texture */
-    private void updateReading(ImageReader reader) {
+    private void updateReading(ByteImage image) {
         if (updateInProgress) {
             return; // QR scanner is not keeping up with camera preview rate. Not really a problem.
         }
         updateInProgress = true;
 
         try {
-            int insetX = 64;
-            int insetY = 256;
-            var image = imageToBytes(reader, insetX, insetY);
-            if (image == null) return;
-
             updateVideoPreview(image.image, image.width, image.height);
 
             if (testCycles > 2){
@@ -240,9 +129,10 @@ public class Main extends Activity
 
             if (binMap == null) return;
 
-            if (tryToFindBarCodeInBitmap(binMap)) {
+            var result = tryToFindBarCodeInBitmap(binMap);
+            if (result != null) {
                 // Show a snap-shot of the thresholded image that worked
-                updateThresholdPreview(binMap);
+                updateThresholdPreview(binMap, result);
             }
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
@@ -277,6 +167,7 @@ public class Main extends Activity
         if (thresholdTemp == null || thresholdTemp.length < image.length) thresholdTemp = new byte[image.length];
         var tmp = thresholdTemp;
 
+        // TODO: improve this so we don't lose the edges
         for (int y = radius; y < height - radius; y++) {
             int yOff = y * width;
             int sum = 0;
@@ -293,10 +184,6 @@ public class Main extends Activity
             for (int x = radius; x < width-radius; x++) {
                 var actual = image[mid] & 0xFF;
                 var target = sum / radius;
-
-                // Don't turn white areas into black lines or vice-versa:
-                if (target > 224) target = 224;
-                if (target < 32) target = 32;
 
                 // Push values away from centre point
                 if (actual < target) tmp[mid] = pin(actual - strength);
@@ -323,8 +210,8 @@ public class Main extends Activity
     }
 
     Bitmap prevLumBitmap = null;
-
     private static int[] lumTemp;
+
     /** Show a greyscale preview of the camera luminance */
     private void updateVideoPreview(byte[] lumMap, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
@@ -338,32 +225,73 @@ public class Main extends Activity
             colorInts[i] = 0xFF000000 + color;
         }
 
-        runOnUiThread(()-> {
-            Bitmap bitmap = Bitmap.createBitmap(colorInts, width, height, config);
-            luminanceViewer.setImageBitmap(bitmap);
-            if (prevLumBitmap != null) prevLumBitmap.recycle();
-            prevLumBitmap = bitmap;
-        });
+        prevLumBitmap = copyColorIntsToBitmap(prevLumBitmap, lumTemp, width, height, config);
+
+        Bitmap finalBitmap = prevLumBitmap;
+        runOnUiThread(()-> luminanceViewer.setImageBitmap(finalBitmap));
     }
 
-    Bitmap prevThreshBitmap = null;
+    Bitmap threshBitmap = null;
     /** Show a black&white preview of the barcode scanner thresholded map */
-    private void updateThresholdPreview(BinaryBitmap binMap) {
-        Bitmap.Config config = Bitmap.Config.RGB_565;
-        Bitmap bitmap = null;
+    private void updateThresholdPreview(BinaryBitmap binMap, Result result) {
+        Bitmap.Config config = Bitmap.Config.ARGB_8888;
+
         try {
-            // TODO: keep one bitmap and do setPixels instead.
-            bitmap = Bitmap.createBitmap(binMap.getBlackMatrix().toColorInts(shouldInvert), binMap.getWidth(), binMap.getHeight(), config);
+            // Check result and size are valid
+            if (binMap == null || result == null) return;
+            var width = binMap.getWidth();
+            var height = binMap.getHeight();
+            if (width < 10 || height < 10) return;
+
+            // get zone with bar code in it
+            var points = result.getResultPoints();
+            int minX = width, maxX = 0;
+            int minY = height, maxY = 0;
+            for (com.google.zxing.ResultPoint point : points) {
+                int x = (int) point.getX(), y = (int) point.getY();
+                if (x > maxX) maxX = x; if (x < minX) minX = x;
+                if (y > maxY) maxY = y; if (y < minY) minY = y;
+            }
+
+            if (minY == maxY) {
+                // 2D code result are 1 pixel high, so we highlight around the match
+                minY -= 16;
+                maxY += 16;
+            }
+
+
+            // render feedback image
+            var pixels = binMap.getBlackMatrix().toColorInts(shouldInvert, minX, maxX, minY, maxY);
+
+            threshBitmap = copyColorIntsToBitmap(threshBitmap, pixels, width, height, config);
+
+            // Draw on screen
+            Bitmap finalBitmap = threshBitmap;
+            runOnUiThread(() -> thresholdViewer.setImageBitmap(finalBitmap));
         } catch (NotFoundException e) {
             Log.e(TAG, "Failure in bin-map preview", e);
         }
+    }
 
-        Bitmap finalBitmap = bitmap;
-        runOnUiThread(() -> {
-            thresholdViewer.setImageBitmap(finalBitmap);
-            if (prevThreshBitmap != null) prevThreshBitmap.recycle();
-            prevThreshBitmap = finalBitmap;
-        });
+    /** Copy "ColorInt" pixel to a bitmap. The bitmap is re-created if null or the wrong size */
+    private Bitmap copyColorIntsToBitmap(Bitmap target, int[] pixels, int width, int height, Bitmap.Config config) {
+        if (target == null) {
+            var tmp = Bitmap.createBitmap(pixels, width, height, config);
+            target = tmp.copy(Bitmap.Config.ARGB_8888,true);
+            tmp.recycle();
+        } else if (differentSize(target, width, height)){
+            target.recycle();
+            var tmp = Bitmap.createBitmap(pixels, width, height, config);
+            target = tmp.copy(Bitmap.Config.ARGB_8888,true);
+            tmp.recycle();
+        } else {
+            target.setPixels(pixels, 0, width, 0, 0, width, height);
+        }
+        return target;
+    }
+
+    private boolean differentSize(Bitmap bitmap, int requiredWidth, int requiredHeight) {
+        return bitmap.getWidth() != requiredWidth || bitmap.getHeight() != requiredHeight;
     }
 
 

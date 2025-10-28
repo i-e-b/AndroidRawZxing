@@ -15,6 +15,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -31,17 +32,35 @@ import java.util.function.Consumer;
  * @noinspection NullableProblems*/
 public class CameraFeedController implements ImageReader.OnImageAvailableListener {
     private final Activity activity;
+    private final int insetX;
+    private final int insetY;
     ImageReader imageReader;
 
     /**
      * Set up camera control
      * @param main Hosting activity
-     * @param updateTrigger trigger to call when a frame is captured
+     * @param captureWidth Width of image to capture (must be 1920 or less, must be supported by camera)
+     * @param captureHeight Height of image to capture (must be 1080 or less, must be supported by camera)
+     * @param insetX Area to crop on left and right of captured image before passing to updateTrigger.
+     *               Must be less than half of captureWidth.
+     * @param insetY Area to crop on top and bottom of captured image before passing to updateTrigger.
+     *               Must be less than half of captureHeight
+     * @param updateTrigger Trigger to call when a frame is captured
      */
-    public CameraFeedController(Activity main, int width, int height, Consumer<ImageReader> updateTrigger) {
+    public CameraFeedController(Activity main,
+                                int captureWidth, int captureHeight,
+                                int insetX, int insetY,
+                                Consumer<ByteImage> updateTrigger) {
         activity = main;
-        if (width > 0 && width < 1920) PREVIEW_WIDTH = width;
-        if (height > 0 && height < 1080) PREVIEW_HEIGHT = height;
+        if (captureWidth > 0 && captureWidth < 1920) CAPTURE_WIDTH = captureWidth;
+        if (captureHeight > 0 && captureHeight < 1080) CAPTURE_HEIGHT = captureHeight;
+
+        var maxInsetX = CAPTURE_WIDTH / 2;
+        var maxInsetY = CAPTURE_HEIGHT / 2;
+
+        this.insetX = insetX >= maxInsetX ? 0 : insetX;
+        this.insetY = insetY >= maxInsetY ? 0 : insetY;
+
         this.updateTrigger = updateTrigger;
     }
 
@@ -55,12 +74,12 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     /**
      * Max preview width that is guaranteed by Camera2 API is 1920
      */
-    public static int PREVIEW_WIDTH = 800;//1920;
+    public static int CAPTURE_WIDTH = 800;//1920;
 
     /**
      * Max preview height that is guaranteed by Camera2 API is 1080
      */
-    public static int PREVIEW_HEIGHT = 600;//1080;
+    public static int CAPTURE_HEIGHT = 600;//1080;
 
     /**
      * ID of the current {@link CameraDevice}.
@@ -70,7 +89,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     /**
      * An  AutoFitTextureView for camera preview.
      */
-    private final Consumer<ImageReader> updateTrigger;
+    private final Consumer<ByteImage> updateTrigger;
 
     /**
      * A {@link CameraCaptureSession } for camera preview.
@@ -143,15 +162,10 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      */
     private boolean mFlashSupported;
 
-    /** Camera orientation relative to screen (should be 0..270 in degrees) */
-    public int Orientation(){
-        return mSensorOrientation;
-    }
-
     /**
      * Orientation of the camera sensor
      */
-    private int mSensorOrientation; // TODO: use this to transform the image
+    private int mSensorOrientation;
 
     /**
      * A {@link CameraCaptureSession.CaptureCallback} that handles events related to capture.
@@ -322,7 +336,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                 // NOTE: ImageFormat.PRIVATE always works, but refuses to supply data.
                 //       Docs claim that ImageFormat.JPEG always works, but this is not true.
                 // ImageFormat.YUV_420_888 seems to be most reliable.
-                imageReader = ImageReader.newInstance(PREVIEW_WIDTH, PREVIEW_HEIGHT, ImageFormat.YUV_420_888, 1);
+                imageReader = ImageReader.newInstance(CAPTURE_WIDTH, CAPTURE_HEIGHT, ImageFormat.YUV_420_888, 1);
                 imageReader.setOnImageAvailableListener(this, null);
             }
 
@@ -383,9 +397,116 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
         }
     }
 
+
+    private static byte[] imageTmp;
+    private static byte[] imageSrc;
+    /** read luminance into a byte array, correcting for relative sensor rotation */
+    private ByteImage imageToBytes(ImageReader reader) {
+        try (Image image = reader.acquireNextImage()) {
+            //try (Image image = reader.acquireLatestImage()) {
+            if (image == null) return null;
+
+            var planes = image.getPlanes();
+
+            if (planes == null || planes.length < 1) {
+                Log.w(TAG, "Invalid image planes");
+                return null;
+            }
+
+            // Read plane into temp buffer
+            var yPlane = planes[0];
+            var buffer = yPlane.getBuffer();
+            var bufferSize = buffer.remaining();
+            if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
+            var data = imageTmp;
+            buffer.get(data);
+
+            // Get parameters of the plane
+            var srcWidth = image.getWidth();
+            var srcHeight = image.getHeight();
+            var dataWidth = yPlane.getRowStride();
+
+            // Get parameter of output
+            var rot = mSensorOrientation;
+            var dstWidth = srcWidth;
+            var dstHeight = srcHeight;
+            if (rot == 90 || rot == 270){
+                //noinspection SuspiciousNameCombination
+                dstWidth = srcHeight;
+                //noinspection SuspiciousNameCombination
+                dstHeight = srcWidth;
+            }
+            dstWidth -= insetX * 2;
+            dstHeight -= insetY * 2;
+
+            // Ensure the final output is ready
+            var requiredSize = srcWidth * srcHeight;
+            if (imageSrc == null || imageSrc.length < requiredSize) {imageSrc = new byte[requiredSize];}
+            var pkg = new ByteImage();
+            pkg.image = imageSrc;
+            pkg.width = dstWidth;
+            pkg.height = dstHeight;
+
+            // Copy from Y-plane into final image,
+            // taking into account margins and rotations
+
+            if (rot == 0){ // no flips
+                int outp = 0;
+                for (int y = 0; y < dstHeight; y++) {
+                    var yOff = dataWidth * (y+ insetY);
+
+                    // Copy a scan line
+                    for (int x = 0; x < dstWidth; x++) {
+                        var idx = yOff + x + insetX;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            } else if (rot == 180){ // Flip horz and vert
+                int outp = 0;
+                for (int y = dstHeight-1; y >= 0; y--) {
+                    var yOff = dataWidth * (y+ insetY);
+
+                    // Copy a scan line
+                    for (int x = dstWidth - 1; x >= 0; x--) {
+                        var idx = yOff + x + insetX;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            } else if (rot == 90) { // copy columns into rows, and flip y
+                int outp = 0;
+                for (int x = 0; x < dstHeight; x++) {
+
+                    // Copy a scan line
+                    for (int y = dstWidth-1; y >= 0; y--) {
+                        var yy = y + insetX;
+                        var yOff = dataWidth * (yy);
+                        var idx = yOff + x + insetY;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            } else if (rot == 270) { // copy columns into rows
+                int outp = 0;
+                for (int x = 0; x < dstHeight; x++) {
+
+                    // Copy a scan line
+                    for (int y = 0; y < dstWidth; y++) {
+                        var yOff = dataWidth * (y + insetX);
+                        var idx = yOff + x + insetY;
+                        imageSrc[outp++] = data[idx];
+                    }
+                }
+            }
+
+            return pkg;
+        } catch (Exception e){
+            Log.e(TAG, "Failed to read camera capture: " + e);
+            return null;
+        }
+    }
+
     @Override
     public void onImageAvailable(ImageReader reader) {
-        // TODO: pull the ImageReader -> Bitmap stuff down here?
-        updateTrigger.accept(reader);
+        var image = imageToBytes(reader);
+        if (image != null) updateTrigger.accept(image);
     }
 }
