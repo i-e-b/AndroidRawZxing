@@ -1,22 +1,24 @@
 package com.ieb.zxingtest;
 
+import android.util.Log;
+
 import com.google.zxing.Binarizer;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.common.BitArray;
 import com.google.zxing.common.BitMatrix;
 
-public class HorizontalAverageBinarizer extends Binarizer {
+public class UnsharpMaskBinarizer extends Binarizer {
     private final int radius;
     private final int bias;
 
     /**
      * Create a running-threshold binarizer
      *
-     * @param source luminance image source
-     * @param scale scale of running average. Adjust to pick out different detail levels. 64 or 32 are good defaults
-     * @param exposure   negative for lighter image, positive for darker. Zero is no bias. Between -16 and 16 seem to work in most cases.
+     * @param source Luminance image source
+     * @param scale Scale of running average. Adjust to pick out different detail levels. 64 or 32 are good defaults
+     * @param exposure Negative for lighter image, positive for darker. Zero is no bias. Between -16 and 16 seem to work in most cases.
      */
-    protected HorizontalAverageBinarizer(LuminanceSource source, int scale, int exposure) {
+    protected UnsharpMaskBinarizer(LuminanceSource source, int scale, int exposure) {
         super(source);
         this.radius = scale;
         this.bias = exposure;
@@ -27,6 +29,7 @@ public class HorizontalAverageBinarizer extends Binarizer {
     private static final int UPPER_LIMIT = 251;
     private static final int LOWER_LIMIT = 4;
 
+    /** Get a single row. This is optimised for 1D bar codes, and only averages across scan lines */
     @Override
     public BitArray getBlackRow(int y, BitArray row) {
         LuminanceSource source = getLuminanceSource();
@@ -45,6 +48,8 @@ public class HorizontalAverageBinarizer extends Binarizer {
         int diam = radius * 2;
         int right = width - 1;
         int sum = 0;
+
+        Log.i("UMB", "1D row requested");
 
         // feed in
         for (int i = -radius; i < radius; i++) {
@@ -77,6 +82,9 @@ public class HorizontalAverageBinarizer extends Binarizer {
         return row;
     }
 
+    private int[] tmp = null;
+
+    /** Get a whole image. This is optimised for 2D bar codes, and averages in X and Y bases */
     @Override
     public BitMatrix getBlackMatrix() {
         LuminanceSource source = getLuminanceSource();
@@ -86,8 +94,37 @@ public class HorizontalAverageBinarizer extends Binarizer {
 
         byte[] image = source.getMatrix();
 
+        if (tmp == null || tmp.length < image.length) tmp = new int[image.length+32];
+
         int diam = radius * 2;
         int right = width - 1;
+        int bottom = height - 1;
+
+        for (int x = 0; x < width; x++) { // for each column
+            int sum = 0;
+
+            // feed in
+            for (int i = -radius; i < radius; i++) {
+                int y = Math.max(i, 0);
+                int yOff = y * width;
+                sum += image[yOff + x] & 0xFF;
+            }
+
+            for (int y = 0; y < height; y++) {
+                int yOff = y * width;
+
+                tmp[yOff + x] = sum / diam;
+
+                // update running average
+                int yr = Math.min(y + radius, bottom) * width;
+                int yl = Math.max(y - radius, 0) * width;
+                int incoming = image[yr + x] & 0xFF;
+                int outgoing = image[yl + x] & 0xFF;
+
+                sum += incoming - outgoing;
+            }
+        }
+
         for (int y = 0; y < height; y++) { // for each scanline
             int yOff = y * width;
             int sum = 0;
@@ -95,7 +132,7 @@ public class HorizontalAverageBinarizer extends Binarizer {
             // feed in
             for (int i = -radius; i < radius; i++) {
                 int x = Math.max(i, 0);
-                sum += image[yOff + x] & 0xFF;
+                sum += tmp[yOff + x];
             }
 
             // running average threshold
@@ -114,8 +151,8 @@ public class HorizontalAverageBinarizer extends Binarizer {
                 // update running average
                 int xr = Math.min(x + radius, right);
                 int xl = Math.max(x - radius, 0);
-                int incoming = image[yOff + xr] & 0xFF;
-                int outgoing = image[yOff + xl] & 0xFF;
+                int incoming = tmp[yOff + xr];
+                int outgoing = tmp[yOff + xl];
 
                 sum += incoming - outgoing;
             }
@@ -126,6 +163,6 @@ public class HorizontalAverageBinarizer extends Binarizer {
 
     @Override
     public Binarizer createBinarizer(LuminanceSource source) {
-        return new HorizontalAverageBinarizer(source, 32, 0);
+        return new UnsharpMaskBinarizer(source, 32, 0);
     }
 }

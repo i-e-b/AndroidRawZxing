@@ -79,7 +79,7 @@ public class Main extends Activity {
 
             runOnUiThread(() -> {
                 if (testCycle) {
-                    text.setText("\r\nFound Barcode (" + habScale + ", " + habExposure + ")");
+                    text.setText("\r\nFound Barcode (" + testScale + ", " + testExposure + ")");
                 } else {
                     text.setText("\r\nFound Barcode (hybrid)");
                 }
@@ -97,14 +97,14 @@ public class Main extends Activity {
     }
 
     private static final int SCALE_MAX = 128;
-    private static final int SCALE_MIN = 16;
+    private static final int SCALE_MIN = 8;
     private static final int EXPOSURE_MAX = 8;
-    private static final int EXPOSURE_MIN = -12;
+    private static final int EXPOSURE_MIN = -18;
 
     private static boolean testCycle = false;
     private static boolean invert = false;
-    private static int habScale = SCALE_MAX;
-    private static int habExposure = EXPOSURE_MAX;
+    private static int testScale = SCALE_MAX;
+    private static int testExposure = EXPOSURE_MAX;
 
     /**
      * Continually cycle through the various settings of HorizontalAverageBinarizer,
@@ -112,20 +112,20 @@ public class Main extends Activity {
      */
     private Binarizer pickThresholdParameters(LuminanceSource lum) {
         Binarizer thresholder;
-        testCycle = !testCycle;
+        testCycle = true;//!testCycle;
 
         if (testCycle) { // alternate between HAB and Zxing hybrid
 
             // Set the parameters beforehand, so the preview is accurate
             if (invert) { // try inverted image
                 invert = false;
-                habExposure -= 2; // cycle through exposure levels
-                if (habExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
-                    habExposure = EXPOSURE_MAX; // ...reset...
-                    habScale /= 2;              // ...and cycle the scale
+                testExposure -= 2; // cycle through exposure levels
+                if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
+                    testExposure = EXPOSURE_MAX; // ...reset...
+                    testScale /= 2;              // ...and cycle the scale
 
-                    if (habScale < SCALE_MIN) { // when scale has been cycled...
-                        habScale = SCALE_MAX;   // ...reset
+                    if (testScale < SCALE_MIN) { // when scale has been cycled...
+                        testScale = SCALE_MAX;   // ...reset
                     }
                 }
             } else {
@@ -134,7 +134,7 @@ public class Main extends Activity {
 
             // HAB thresholder
             if (invert) lum = lum.invert();
-            thresholder = new HorizontalAverageBinarizer(lum, habScale, habExposure);
+            thresholder = new UnsharpMaskBinarizer(lum, testScale, testExposure);
 
         } else { // Zxing Hybrid thresholder
             if (invert) lum = lum.invert();
@@ -168,10 +168,10 @@ public class Main extends Activity {
 
             // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
-            if (result != null) { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
+            //if (result != null) { // remove this 'if' for diagnostic view... but EPILEPSY WARNING!
                 // Show a snap-shot of the thresholded image that worked
                 updateThresholdPreview(binMap, result, invert);
-            }
+            //}
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
         } finally {
