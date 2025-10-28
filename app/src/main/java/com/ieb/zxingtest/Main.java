@@ -11,13 +11,13 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.google.zxing.Binarizer;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.LuminanceSource;
 import com.google.zxing.MultiFormatReader;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
-import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 
 /** @noinspection NullableProblems*/
@@ -28,9 +28,6 @@ public class Main extends Activity
     private ImageView thresholdViewer;
     private ImageView luminanceViewer;
     private TextView text;
-
-    private boolean shouldInvert = false;
-    private boolean useGlobal = false;
 
     private volatile boolean updateInProgress;
     private MultiFormatReader zxingReader;
@@ -87,20 +84,14 @@ public class Main extends Activity
             // No code found. This is fine
         } catch (Exception e) {
             // If the capture is blurry or not at a good angle, we probably get a checksum error here.
-            Log.w(TAG, "Could not read bar-code: "+e);
+            Log.w(TAG, "Could not read bar-code: " + e);
         }
         return null;
     }
 
-    /** try inverting the image on alternate frames. Zxing doesn't seem to find inverted QR codes. */
-    private LuminanceSource maybeInvert(LuminanceSource source) {
-        // Alternate between inverting and not. Helps with white-on-black codes
-        shouldInvert = !shouldInvert;
-        if (shouldInvert) return source.invert();
-        return source;
-    }
-
     private static int testCycles = 0;
+    private static boolean invert = false;
+
     /** Try to read a QR code from the current texture */
     private void updateReading(ByteImage image) {
         if (updateInProgress) {
@@ -111,102 +102,70 @@ public class Main extends Activity
         try {
             updateVideoPreview(image.image, image.width, image.height);
 
-            if (testCycles > 2){
-                thresholdHorz(image.image, image.width, image.height, 64);
-            }
-            testCycles++;
-            if (testCycles > 4) {
-                testCycles = 0;
-                useGlobal = !useGlobal;
-            }
-
-
-            PlanarYUVLuminanceSource lum = new PlanarYUVLuminanceSource(
+            LuminanceSource lum = new PlanarYUVLuminanceSource(
                     image.image, image.width, image.height,
                     0, 0, image.width, image.height, false);
 
-            var binMap = convertToBinaryMap(lum, useGlobal);
+            if (invert) lum = lum.invert();
 
-            if (binMap == null) return;
+            Binarizer thresholder;
 
+            // Rotate around a set of different image transforms.
+            // Hopefully at least one of them will capture correctly.
+            switch (testCycles++) {
+                // HAB thresholder
+                case 0:
+                    thresholder = new HorizontalAverageBinarizer(lum, 32, -4);
+                    break;
+                case 1:
+                    thresholder = new HorizontalAverageBinarizer(lum, 32, -2);
+                    break;
+                case 2:
+                    thresholder = new HorizontalAverageBinarizer(lum, 32, 0);
+                    break;
+                case 3:
+                    thresholder = new HorizontalAverageBinarizer(lum, 32, 2);
+                    break;
+
+                case 4:
+                    thresholder = new HorizontalAverageBinarizer(lum, 64, -4);
+                    break;
+                case 5:
+                    thresholder = new HorizontalAverageBinarizer(lum, 64, -2);
+                    break;
+                case 6:
+                    thresholder = new HorizontalAverageBinarizer(lum, 64, 0);
+                    break;
+                case 7:
+                    thresholder = new HorizontalAverageBinarizer(lum, 64, 2);
+                    break;
+
+                // Zxing Hybrid thresholder
+                case 8:
+                    thresholder = new HybridBinarizer(lum);
+                    break;
+
+                default:
+                    testCycles = 0;
+                    invert = !invert;
+                    thresholder = new HorizontalAverageBinarizer(lum, 32, -2);
+                    break;
+            }
+
+            // Convert greyscale to B&W
+            var binMap = new BinaryBitmap(thresholder);
+
+            // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
             if (result != null) {
                 // Show a snap-shot of the thresholded image that worked
-                updateThresholdPreview(binMap, result);
+                updateThresholdPreview(binMap, result, invert);
             }
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
         } finally {
             updateInProgress = false;
         }
-    }
-
-
-    private BinaryBitmap convertToBinaryMap(LuminanceSource bitmap, boolean useGlobalThreshold) {
-        if (bitmap == null) return null;
-
-        try {
-            // Alternate between inversions
-            var image = maybeInvert(bitmap);
-
-            // Threshold down to a black&white image
-            var thresholder = (useGlobalThreshold) ? new GlobalHistogramBinarizer(image) : new HybridBinarizer(image);
-
-            return new BinaryBitmap(thresholder);
-        } catch (Exception e) {
-            Log.w(TAG, "Could not read bitmap image: "+e);
-        }
-        return null;
-    }
-
-    private static byte[] thresholdTemp;
-    /** threshold pixel based on a running average
-     * @noinspection SameParameterValue*/
-    private void thresholdHorz(byte[] image, int width, int height, int radius){
-        int strength = 32;
-        if (thresholdTemp == null || thresholdTemp.length < image.length) thresholdTemp = new byte[image.length];
-        var tmp = thresholdTemp;
-
-        // TODO: improve this so we don't lose the edges
-        for (int y = radius; y < height - radius; y++) {
-            int yOff = y * width;
-            int sum = 0;
-            int lead = yOff;
-            int trail = yOff;
-            int mid = yOff + (radius / 2);
-
-            for (int i = 0; i < radius; i++) {
-                sum += image[lead] & 0xFF;
-                lead ++;
-            }
-
-            // decide running average
-            for (int x = radius; x < width-radius; x++) {
-                var actual = image[mid] & 0xFF;
-                var target = sum / radius;
-
-                // Push values away from centre point
-                if (actual < target) tmp[mid] = pin(actual - strength);
-                else tmp[mid] = pin(actual + strength);
-
-                int incoming = image[lead] & 0xFF;
-                int outgoing = image[trail] & 0xFF;
-
-                sum += incoming - outgoing;
-
-                lead++;
-                trail++;
-                mid++;
-            }
-        }
-
-        System.arraycopy(tmp, 0, image, 0, image.length);
-    }
-
-    private byte pin(int v) {
-        if (v < 0) return 0x00;
-        if (v > 254) return (byte)0xFF;
-        return (byte) v;
     }
 
     Bitmap prevLumBitmap = null;
@@ -233,35 +192,42 @@ public class Main extends Activity
 
     Bitmap threshBitmap = null;
     /** Show a black&white preview of the barcode scanner thresholded map */
-    private void updateThresholdPreview(BinaryBitmap binMap, Result result) {
+    private void updateThresholdPreview(BinaryBitmap binMap, Result result, boolean inverted) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
         try {
             // Check result and size are valid
-            if (binMap == null || result == null) return;
+            if (binMap == null) return;
             var width = binMap.getWidth();
             var height = binMap.getHeight();
             if (width < 10 || height < 10) return;
 
             // get zone with bar code in it
-            var points = result.getResultPoints();
-            int minX = width, maxX = 0;
-            int minY = height, maxY = 0;
-            for (com.google.zxing.ResultPoint point : points) {
-                int x = (int) point.getX(), y = (int) point.getY();
-                if (x > maxX) maxX = x; if (x < minX) minX = x;
-                if (y > maxY) maxY = y; if (y < minY) minY = y;
-            }
+            int minX = 0, maxX = 0;
+            int minY = 0, maxY = 0;
 
-            if (minY == maxY) {
-                // 2D code result are 1 pixel high, so we highlight around the match
-                minY -= 16;
-                maxY += 16;
+            if (result != null) {
+                minX = width;
+                minY = height;
+                var points = result.getResultPoints();
+                for (com.google.zxing.ResultPoint point : points) {
+                    int x = (int) point.getX(), y = (int) point.getY();
+                    if (x > maxX) maxX = x;
+                    if (x < minX) minX = x;
+                    if (y > maxY) maxY = y;
+                    if (y < minY) minY = y;
+                }
+
+                if (minY == maxY) {
+                    // 2D code result are 1 pixel high, so we highlight around the match
+                    minY -= 16;
+                    maxY += 16;
+                }
             }
 
 
             // render feedback image
-            var pixels = binMap.getBlackMatrix().toColorInts(shouldInvert, minX, maxX, minY, maxY);
+            var pixels = binMap.getBlackMatrix().toColorInts(inverted, minX, maxX, minY, maxY);
 
             threshBitmap = copyColorIntsToBitmap(threshBitmap, pixels, width, height, config);
 

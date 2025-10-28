@@ -398,8 +398,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     }
 
 
-    private static byte[] imageTmp;
-    private static byte[] imageSrc;
+    private byte[] imageTmp;
+    private byte[] imageSrc;
     /** read luminance into a byte array, correcting for relative sensor rotation */
     private ByteImage imageToBytes(ImageReader reader) {
         try (Image image = reader.acquireNextImage()) {
@@ -504,9 +504,18 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
         }
     }
 
+    private volatile boolean updateActive = false;
+
     @Override
     public void onImageAvailable(ImageReader reader) {
-        var image = imageToBytes(reader);
-        if (image != null) updateTrigger.accept(image);
+        if (updateActive) return; // consumer is not running fast enough
+
+        try {
+            updateActive = true;
+            var image = imageToBytes(reader);
+            if (image != null) updateTrigger.accept(image);
+        } finally {
+            updateActive = false;
+        }
     }
 }

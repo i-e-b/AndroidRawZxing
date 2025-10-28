@@ -187,12 +187,31 @@ public final class BitMatrix implements Cloneable {
 
     var i = 0;
 
+    if (maxY == 0 && minY == 0 && minX == 0 && maxX == 0){
+      for (int y = 0; y < height; y++) {
+        int yOff = y * rowSize;
+        int x = 0;
+        while (x < width) {
+          int offset = yOff + (x / 32);
+          var chunk = bits[offset];
+          for (int ci = 0; ci < 32 && x < width; ci++){
+            boolean set = (chunk & 1) == 0;
+            colorIntsBuffer[i++] = set ? white : black;
+            chunk >>>= 1;
+            x++;
+          }
+        }
+      }
+      return colorIntsBuffer;
+    }
+
+
     // Draw region before highlight
     for (int y = 0; y < minY; y++) {
-      int yoff = y * rowSize;
+      int yOff = y * rowSize;
       int x = 0;
       while (x < width) {
-        int offset = yoff + (x / 32);
+        int offset = yOff + (x / 32);
         var chunk = bits[offset];
         for (int ci = 0; ci < 32 && x < width; ci++){
           boolean set = (chunk & 1) == 0;
@@ -204,12 +223,12 @@ public final class BitMatrix implements Cloneable {
     }
 
     // Draw highlight region
-    minX -= 31; // improve left edge threshold
+    if (minX > 31) minX -= 31; // improve left edge threshold
     for (int y = minY; y < maxY; y++) {
-      int yoff = y * rowSize;
+      int yOff = y * rowSize;
       int x = 0;
       while (x < width) {
-        int offset = yoff + (x / 32);
+        int offset = yOff + (x / 32);
         var chunk = bits[offset];
 
         // highlight the 32-pixel blocks that contain code
@@ -227,10 +246,10 @@ public final class BitMatrix implements Cloneable {
 
     // Draw region after highlight
     for (int y = maxY; y < height; y++) {
-      int yoff = y * rowSize;
+      int yOff = y * rowSize;
       int x = 0;
       while (x < width) {
-        int offset = yoff + (x / 32);
+        int offset = yOff + (x / 32);
         var chunk = bits[offset];
         for (int ci = 0; ci < 32 && x < width; ci++){
           boolean set = (chunk & 1) == 0;
