@@ -32,6 +32,7 @@ import java.util.function.Consumer;
  * @noinspection NullableProblems*/
 public class CameraFeedController implements ImageReader.OnImageAvailableListener {
     private final Activity activity;
+    private final Consumer<String> errorTrigger;
     private final int insetX;
     private final int insetY;
     ImageReader imageReader;
@@ -50,8 +51,10 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     public CameraFeedController(Activity main,
                                 int captureWidth, int captureHeight,
                                 int insetX, int insetY,
-                                Consumer<ByteImage> updateTrigger) {
+                                Consumer<ByteImage> updateTrigger,
+                                Consumer<String> errorTrigger) {
         activity = main;
+
         if (captureWidth > 0 && captureWidth < 1920) CAPTURE_WIDTH = captureWidth;
         if (captureHeight > 0 && captureHeight < 1080) CAPTURE_HEIGHT = captureHeight;
 
@@ -61,6 +64,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
         this.insetX = insetX >= maxInsetX ? 0 : insetX;
         this.insetY = insetY >= maxInsetY ? 0 : insetY;
 
+        this.errorTrigger = errorTrigger;
         this.updateTrigger = updateTrigger;
     }
 
@@ -127,7 +131,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
             cameraDevice.close();
             mCameraDevice = null;
 
-            // TODO: feed back error info
+            // Feed back error info
+            if (errorTrigger != null) errorTrigger.accept("Failed to access camera: "+error);
         }
 
     };
@@ -379,9 +384,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
 
                         @Override
                         public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
-
-                            // TODO: Fire off an error warning
-                            //showToast("Failed (" + cameraCaptureSession.toString() + ")");
+                            // Fire off an error warning
+                            if (errorTrigger != null) errorTrigger.accept("Failed to configure camera: "+ cameraCaptureSession.toString());
                         }
                     }, null
             );

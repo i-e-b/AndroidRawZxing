@@ -18,6 +18,7 @@ import com.google.zxing.pdf417.PDF417Reader;
 import com.google.zxing.qrcode.QRCodeReader;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Map;
 
 public class PresetListReader  implements Reader {
@@ -76,11 +77,31 @@ public class PresetListReader  implements Reader {
         }
     }
 
+    private Map<DecodeHintType,?> hints = null;
+
+    /** If true, the "Try Harder" hint will be given to scanners.
+     * This might improve success on marginal codes, but at the
+     * expense of more processing time. */
+    public void setTryHarder(boolean value){
+        if (!value) {
+            hints = null;
+            return;
+        }
+
+        if (hints == null) {
+            hints = new HashMap<>();
+        }
+
+        if (!hints.containsKey(DecodeHintType.TRY_HARDER)) {
+            hints.put(DecodeHintType.TRY_HARDER, null);
+        }
+    }
+
     @Override
     public Result decode(BinaryBitmap image) throws NotFoundException, ChecksumException, FormatException {
         for (Reader reader : readers) {
             try {
-                var result = reader.decode(image);
+                var result = reader.decode(image, hints);
                 if (result != null) return result;
             } catch (Exception e) {
                 // Ignore
