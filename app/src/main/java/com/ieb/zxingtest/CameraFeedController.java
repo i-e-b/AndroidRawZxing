@@ -311,25 +311,29 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
      * Starts a background thread and its {@link Handler}.
      */
     private void startBackgroundThread() {
-        mBackgroundThread = new HandlerThread("CameraBackground");
-        mBackgroundThread.start();
-        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        try {
+            mBackgroundThread = new HandlerThread("CameraBackground");
+            mBackgroundThread.start();
+            mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to start background thread" + e);
+        }
     }
 
     /**
      * Stops the background thread and its {@link Handler}.
      */
     private void stopBackgroundThread() {
-        mBackgroundThread.quitSafely();
         try {
+            if (mBackgroundThread == null) return;
+            mBackgroundThread.quitSafely();
             mBackgroundThread.join();
             mBackgroundThread = null;
             mBackgroundHandler = null;
-        } catch (InterruptedException e) {
-            Log.w(TAG, "Failed to stop background thread"+e);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to stop background thread" + e);
         }
     }
-
 
 
     /**

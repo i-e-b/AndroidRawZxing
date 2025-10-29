@@ -169,51 +169,24 @@ public final class BitMatrix implements Cloneable {
    * This is mainly for displaying thresholded images for diagnostics.
    *
    * If min/max ranges are valid, the enclosed range is colored. Set all to zero to turn off highlight. */
-  public int[] toColorInts(boolean invert, int minX, int maxX, int minY, int maxY) {
+  public int[] toColorInts(boolean invert) {
     var size = width * height;
     if (colorIntsBuffer == null || colorIntsBuffer.length < size) {
       colorIntsBuffer = new int[width * height];
     }
 
-    if (maxY > height) maxY = height;
-    if (minY < 0) minY = 0;
-    if (maxX > width) maxX = width;
-    if (minX < 0) minX = 0;
-
     var white = invert ? 0xFF000000 : 0xFFFFFFFF;
     var black = invert ? 0xFFFFFFFF : 0xFF000000;
-    var whiteHl = invert ? 0xFF007700 : 0xFF80FF80;
-    var blackHl = invert ? 0xFF80FF80 : 0xFF007700;
 
     var i = 0;
 
-    if (maxY == 0 && minY == 0 && minX == 0 && maxX == 0){
-      for (int y = 0; y < height; y++) {
-        int yOff = y * rowSize;
-        int x = 0;
-        while (x < width) {
-          int offset = yOff + (x / 32);
-          var chunk = bits[offset];
-          for (int ci = 0; ci < 32 && x < width; ci++){
-            boolean set = (chunk & 1) == 0;
-            colorIntsBuffer[i++] = set ? white : black;
-            chunk >>>= 1;
-            x++;
-          }
-        }
-      }
-      return colorIntsBuffer;
-    }
-
-
-    // Draw region before highlight
-    for (int y = 0; y < minY; y++) {
+    for (int y = 0; y < height; y++) {
       int yOff = y * rowSize;
       int x = 0;
       while (x < width) {
         int offset = yOff + (x / 32);
         var chunk = bits[offset];
-        for (int ci = 0; ci < 32 && x < width; ci++){
+        for (int ci = 0; ci < 32 && x < width; ci++) {
           boolean set = (chunk & 1) == 0;
           colorIntsBuffer[i++] = set ? white : black;
           chunk >>>= 1;
@@ -221,65 +194,6 @@ public final class BitMatrix implements Cloneable {
         }
       }
     }
-
-    // Draw highlight region
-    if (minX > 31) minX -= 31; // improve left edge threshold
-    for (int y = minY; y < maxY; y++) {
-      int yOff = y * rowSize;
-      int x = 0;
-      while (x < width) {
-        int offset = yOff + (x / 32);
-        var chunk = bits[offset];
-
-        // highlight the 32-pixel blocks that contain code
-        int cWhite = (x >= minX && x < maxX) ? whiteHl : white;
-        int cBlack = (x >= minX && x < maxX) ? blackHl : black;
-
-        for (int ci = 0; ci < 32 && x < width; ci++){
-          boolean set = (chunk & 1) == 0;
-          colorIntsBuffer[i++] = set ? cWhite : cBlack;
-          chunk >>>= 1;
-          x++;
-        }
-      }
-    }
-
-    // Draw region after highlight
-    for (int y = maxY; y < height; y++) {
-      int yOff = y * rowSize;
-      int x = 0;
-      while (x < width) {
-        int offset = yOff + (x / 32);
-        var chunk = bits[offset];
-        for (int ci = 0; ci < 32 && x < width; ci++){
-          boolean set = (chunk & 1) == 0;
-          colorIntsBuffer[i++] = set ? white : black;
-          chunk >>>= 1;
-          x++;
-        }
-      }
-    }
-
-
-
-
-    //...
-    //var i = 0;
-    /*for (int y = 0; y < height; y++) {
-      int yoff = y * rowSize;
-      int x = 0;
-      while (x < width) {
-        int offset = yoff + (x / 32);
-        var chunk = bits[offset];
-        for (int ci = 0; ci < 32 && x < width; ci++){
-          boolean set = (chunk & 1) == 0;
-          colorIntsBuffer[i++] = set ? white : black;
-          chunk >>>= 1;
-          x++;
-        }
-      }
-    }*/
-
     return colorIntsBuffer;
   }
 

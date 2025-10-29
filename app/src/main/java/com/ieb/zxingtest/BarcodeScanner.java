@@ -3,6 +3,7 @@ package com.ieb.zxingtest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.util.Log;
 import android.widget.ImageView;
 
@@ -17,6 +18,7 @@ import com.google.zxing.Result;
 
 import java.util.function.Consumer;
 
+/** @noinspection unused*/
 public class BarcodeScanner {
     private final String TAG = "BarcodeScanner";
     private final Activity act;
@@ -30,8 +32,9 @@ public class BarcodeScanner {
     private ImageView previewOutput;
     private ImageView diagnosticOutput;
     private boolean constantDiagnostics = false;
+    private boolean showMatchBox;
 
-    private volatile boolean updateInProgress;
+    private volatile boolean updateInProgress; // try to reduce overlapping scans on slow devices
 
     // Search range. Expand for slower but more extensive checks
     private static final int SCALE_MAX = 7; // 128-pixel spans
@@ -69,6 +72,12 @@ public class BarcodeScanner {
         previewOutput = imageView;
     }
 
+    /** If `true` and a preview ImageView is set, any matched codes will be highlighted with a green overlay.
+     */
+    public void showMatchBox(boolean show) {
+        showMatchBox = show;
+    }
+
     /** (Optional) Add an image view that is updated with the internal thresholded view on capture */
     public void addDiagnosticView(ImageView thresholdViewer) {
         diagnosticOutput = thresholdViewer;
@@ -91,6 +100,13 @@ public class BarcodeScanner {
         errorMessageCallback = onError;
     }
 
+    private static boolean invert = false;
+    private static int testScale = SCALE_MAX;
+    private static int testExposure = EXPOSURE_MAX;
+    private Bitmap prevLumBitmap = null;
+    private static int[] lumTemp;
+    private Bitmap threshBitmap = null;
+
     @SuppressLint("SetTextI18n")
     private Result tryToFindBarCodeInBitmap(BinaryBitmap binMap) {
         if (binMap == null) {
@@ -100,10 +116,7 @@ public class BarcodeScanner {
 
         try {
             zxingReader.reset();
-            var result = zxingReader.decode(binMap);
-            if (result != null && resultCallback != null) resultCallback.accept(result);
-
-            return result;
+            return zxingReader.decode(binMap);
         } catch (com.google.zxing.NotFoundException nf) {
             // No code found. This is fine
         } catch (Exception e) {
@@ -112,10 +125,6 @@ public class BarcodeScanner {
         }
         return null;
     }
-
-    private static boolean invert = false;
-    private static int testScale = SCALE_MAX;
-    private static int testExposure = EXPOSURE_MAX;
 
     /**
      * Continually cycle through the various settings of UnsharpMaskBinarizer
@@ -155,8 +164,6 @@ public class BarcodeScanner {
         updateInProgress = true;
 
         try {
-            if (previewOutput != null) updateVideoPreview(image.image, image.width, image.height);
-
             LuminanceSource lum = new PlanarYUVLuminanceSource(
                     image.image, image.width, image.height,
                     0, 0, image.width, image.height, false);
@@ -171,10 +178,14 @@ public class BarcodeScanner {
             // Scan for codes
             var result = tryToFindBarCodeInBitmap(binMap);
 
+            if (previewOutput != null) updateVideoPreview(image.image, result, image.width, image.height);
+
             if (constantDiagnostics || result != null) {
                 // Show a snap-shot of the thresholded image that worked
-                if (diagnosticOutput != null) updateThresholdPreview(binMap, result, invert);
+                if (diagnosticOutput != null) updateThresholdPreview(binMap, invert);
             }
+
+            if (result != null && resultCallback != null) resultCallback.accept(result);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to scan image: " + t);
         } finally {
@@ -182,15 +193,37 @@ public class BarcodeScanner {
         }
     }
 
-    Bitmap prevLumBitmap = null;
-    private static int[] lumTemp;
+    /** Create a rectangle matching the position of a detected code.
+     * Returns an empty rect if no match. */
+    private Rect resultToRect(Result result, int width, int height){
+        if (result == null) return new Rect(0,0,0,0);
+
+        // get zone with bar code in it
+        int minX = width, maxX = 0;
+        int minY = height, maxY = 0;
+
+        var points = result.getResultPoints();
+        for (com.google.zxing.ResultPoint point : points) {
+            int x = (int) point.getX(), y = (int) point.getY();
+            if (x > maxX) maxX = x;
+            if (x < minX) minX = x;
+            if (y > maxY) maxY = y;
+            if (y < minY) minY = y;
+        }
+
+        if (minY == maxY) {
+            // 2D code result are 1 pixel high, so we highlight around the match
+            minY -= 16;
+            maxY += 16;
+        }
+
+        return new Rect(minX, minY, maxX, maxY);
+    }
 
     /**
      * Show a greyscale preview of the camera luminance
      */
-    private void updateVideoPreview(byte[] lumMap, int width, int height) {
-        Bitmap.Config config = Bitmap.Config.ARGB_8888;
-
+    private void updateVideoPreview(byte[] lumMap, Result result, int width, int height) {
         if (lumTemp == null || lumTemp.length < lumMap.length) lumTemp = new int[lumMap.length];
         var colorInts = lumTemp;
 
@@ -200,20 +233,21 @@ public class BarcodeScanner {
             colorInts[i] = 0xFF000000 + color;
         }
 
-        prevLumBitmap = copyColorIntsToBitmap(prevLumBitmap, lumTemp, width, height, config);
+        if (showMatchBox && result != null) {
+            var rect = resultToRect(result, width, height);
+            prevLumBitmap = copyColorIntsToBitmapWithBox(prevLumBitmap, lumTemp, rect, width, height);
+        } else {
+            prevLumBitmap = copyColorIntsToBitmap(prevLumBitmap, lumTemp, width, height);
+        }
 
         Bitmap finalBitmap = prevLumBitmap;
         act.runOnUiThread(() -> previewOutput.setImageBitmap(finalBitmap));
     }
 
-    Bitmap threshBitmap = null;
-
     /**
      * Show a black&white preview of the barcode scanner thresholded map
      */
-    private void updateThresholdPreview(BinaryBitmap binMap, Result result, boolean inverted) {
-        Bitmap.Config config = Bitmap.Config.ARGB_8888;
-
+    private void updateThresholdPreview(BinaryBitmap binMap, boolean inverted) {
         try {
             // Check result and size are valid
             if (binMap == null) return;
@@ -221,34 +255,10 @@ public class BarcodeScanner {
             var height = binMap.getHeight();
             if (width < 10 || height < 10) return;
 
-            // get zone with bar code in it
-            int minX = 0, maxX = 0;
-            int minY = 0, maxY = 0;
-
-            if (result != null) {
-                minX = width;
-                minY = height;
-                var points = result.getResultPoints();
-                for (com.google.zxing.ResultPoint point : points) {
-                    int x = (int) point.getX(), y = (int) point.getY();
-                    if (x > maxX) maxX = x;
-                    if (x < minX) minX = x;
-                    if (y > maxY) maxY = y;
-                    if (y < minY) minY = y;
-                }
-
-                if (minY == maxY) {
-                    // 2D code result are 1 pixel high, so we highlight around the match
-                    minY -= 16;
-                    maxY += 16;
-                }
-            }
-
-
             // render feedback image
-            var pixels = binMap.getBlackMatrix().toColorInts(inverted, minX, maxX, minY, maxY);
+            var pixels = binMap.getBlackMatrix().toColorInts(inverted);
 
-            threshBitmap = copyColorIntsToBitmap(threshBitmap, pixels, width, height, config);
+            threshBitmap = copyColorIntsToBitmap(threshBitmap, pixels, width, height);
 
             // Draw on screen
             Bitmap finalBitmap = threshBitmap;
@@ -261,7 +271,9 @@ public class BarcodeScanner {
     /**
      * Copy "ColorInt" pixel to a bitmap. The bitmap is re-created if null or the wrong size
      */
-    private Bitmap copyColorIntsToBitmap(Bitmap target, int[] pixels, int width, int height, Bitmap.Config config) {
+    private Bitmap copyColorIntsToBitmap(Bitmap target, int[] pixels, int width, int height) {
+        Bitmap.Config config = Bitmap.Config.ARGB_8888;
+
         if (target == null) {
             var tmp = Bitmap.createBitmap(pixels, width, height, config);
             target = tmp.copy(Bitmap.Config.ARGB_8888, true);
@@ -277,7 +289,25 @@ public class BarcodeScanner {
         return target;
     }
 
+    /**
+     * Copy "ColorInt" pixel to a bitmap with an overlay box. The bitmap is re-created if null or the wrong size
+     */
+    private Bitmap copyColorIntsToBitmapWithBox(Bitmap target, int[] pixels, Rect box, int width, int height) {
+        // Update pixels to make the box green
+        for (int y = box.top; y < box.bottom; y++) {
+            var yOff = y * width;
+
+            for (int x = box.left; x < box.right; x++) {
+                pixels[yOff+x] = 0xFF00FF00 & pixels[yOff+x]; // set only green pixels on
+            }
+        }
+
+        // Copy modified pixels into bitmap
+        return copyColorIntsToBitmap(target, pixels, width, height);
+    }
+
     private boolean differentSize(Bitmap bitmap, int requiredWidth, int requiredHeight) {
         return bitmap.getWidth() != requiredWidth || bitmap.getHeight() != requiredHeight;
     }
+
 }

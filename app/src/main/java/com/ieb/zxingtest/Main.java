@@ -44,6 +44,8 @@ public class Main extends Activity {
         scanner.onCodeFound(this::codeFound);
         scanner.onErrorMessage(this::cameraError);
         scanner.addPreview(luminanceViewer);
+        scanner.showMatchBox(true);
+
         scanner.addDiagnosticView(thresholdViewer);
         scanner.setShowConstantDiagnostics(true);
         scanner.start();
@@ -59,6 +61,9 @@ public class Main extends Activity {
 
     /** Callback triggered when a barcode is detected */
     private void codeFound(Result result){
+        scanner.pause(); // do this to stop scanning after a capture.
+        // You could check other aspects of the code and decide if it is valid (Luhn codes etc)
+
         runOnUiThread(() -> {
             text.setText("\r\nFound Barcode");
             text.append("\r\nBar code result: " + result);
