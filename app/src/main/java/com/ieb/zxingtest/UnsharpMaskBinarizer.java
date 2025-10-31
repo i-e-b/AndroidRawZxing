@@ -177,11 +177,12 @@ public class UnsharpMaskBinarizer extends Binarizer {
             }
 
             row = 0;
+            var end = image.length - x - 1;
             for (int y = 0; y < height; y++) {
                 colLuminances[row + x] = sum >>> diam;
 
                 // update running average
-                int yr = Math.min(row + span, image.length);
+                int yr = Math.min(row + span, end);
                 int yl = Math.max(row - span, 0);
                 int incoming = image[yr + x] & 0xFF;
                 int outgoing = image[yl + x] & 0xFF;
@@ -255,11 +256,12 @@ public class UnsharpMaskBinarizer extends Binarizer {
             }
 
             row = 0;
+            var end = image.length - x - 1;
             for (int y = 0; y < height; y++) {
                 colLuminances[row + x] = sum >>> diam;
 
                 // update running average
-                int yr = Math.min(row + span, image.length);
+                int yr = Math.min(row + span, end);
                 int yl = Math.max(row - span, 0);
                 int incoming = image[yr + x] & 0xFF;
                 int outgoing = image[yl + x] & 0xFF;
