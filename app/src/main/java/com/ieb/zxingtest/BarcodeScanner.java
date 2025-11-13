@@ -39,8 +39,10 @@ public class BarcodeScanner {
     // Search range. Expand for slower but more extensive checks
     private static final int SCALE_MAX = 7; // 128-pixel spans
     private static final int SCALE_MIN = 4; // 16-pixel spans
-    private static final int EXPOSURE_MAX = 12; // darkest exposure test (we assume codes are more likely to be faded than too dark)
-    private static final int EXPOSURE_MIN = -4; // lightest exposure test
+    private static final int EXPOSURE_MAX = 16; // darkest exposure test (we assume codes are more likely to be faded than too dark)
+    private static final int EXPOSURE_MIN = 0; // lightest exposure test
+    private static final int CLOSING_MIN = 0; // smallest 'closing' radius (0 = off)
+    private static final int CLOSING_MAX = 1; // largest 'closing' radius
 
     public BarcodeScanner(Activity act) {
         this.act = act;
@@ -103,6 +105,7 @@ public class BarcodeScanner {
     private static boolean invert = false;
     private static int testScale = SCALE_MAX;
     private static int testExposure = EXPOSURE_MAX;
+    private static int testClosing = CLOSING_MIN;
     private Bitmap prevLumBitmap = null;
     private static int[] lumTemp;
     private Bitmap threshBitmap = null;
@@ -134,18 +137,23 @@ public class BarcodeScanner {
         invert = !invert; // Alternate inverted and not
         if (invert) { // after trying inverted, change parameters
             testExposure -= 2; // cycle through exposure levels
-            if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
-                testExposure = EXPOSURE_MAX; // ...reset...
-                testScale -= 1;              // ...and cycle the scale
+            if (testExposure < EXPOSURE_MIN) {       // when full exposure range has been tested...
+                testExposure = EXPOSURE_MAX;         // ...reset...
+                testScale -= 1;                      // ...and cycle the scale
 
-                if (testScale < SCALE_MIN) { // when scale has been cycled...
-                    testScale = SCALE_MAX;   // ...reset
+                if (testScale < SCALE_MIN) {         // when scale has been cycled...
+                    testScale = SCALE_MAX;           // ...reset
+                    testClosing -= 1;                // ...and cycle closing radius
+
+                    if (testClosing < CLOSING_MIN) { // when closing has been cycled...
+                        testClosing = CLOSING_MAX;   // ...reset
+                    }
                 }
             }
         }
 
         // UMB thresholder
-        return new UnsharpMaskBinarizer(lum, invert, testScale, testExposure);
+        return new UnsharpMaskBinarizer(lum, invert, testScale, testExposure, testClosing);
     }
 
     private void onScannerError(String msg) {
