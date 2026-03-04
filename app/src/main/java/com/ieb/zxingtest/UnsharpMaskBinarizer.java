@@ -231,7 +231,7 @@ public class UnsharpMaskBinarizer extends Binarizer {
         }
 
         if (morph) {
-            int rad = scale - 2;
+            int rad = scale / 2;
             if (rad < 1) rad = 1;
             MorphologicalTransforms.Opening2D(result, width, height, rad);
         }
@@ -325,7 +325,7 @@ public class UnsharpMaskBinarizer extends Binarizer {
         }
 
         if (morph) {
-            int rad = scale - 2;
+            int rad = scale / 2;
             if (rad < 1) rad = 1;
             MorphologicalTransforms.Opening2D(result, width, height, rad);
         }
