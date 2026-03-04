@@ -157,11 +157,9 @@ public class UnsharpMaskBinarizer extends Binarizer {
         LuminanceSource source = getLuminanceSource();
         int width = source.getWidth();
         int height = source.getHeight();
-        BitMatrix matrix = new BitMatrix(width, height);
 
         byte[] image = source.getMatrix();
-
-        if (morph) MorphologicalTransforms.Opening2D(image, width, height, scale / 2);
+        byte[] result = new byte[image.length];
 
         if (colLuminances == null || colLuminances.length < image.length) colLuminances = new int[image.length+32];
 
@@ -219,7 +217,8 @@ public class UnsharpMaskBinarizer extends Binarizer {
                 if (target < LOWER_LIMIT) target = LOWER_LIMIT;
 
                 // Decide what side of the threshold we are on
-                if (actual < target) matrix.set(x, y);
+                //if (actual < target) matrix.set(x, y);
+                result[yOff + x] = (actual < target) ? (byte) 0x00 : 0x0F;
 
                 // update running average
                 int xr = Math.min(x + radius, right);
@@ -228,6 +227,20 @@ public class UnsharpMaskBinarizer extends Binarizer {
                 int outgoing = colLuminances[yOff + xl];
 
                 sum += incoming - outgoing;
+            }
+        }
+
+        if (morph) {
+            int rad = scale - 2;
+            if (rad < 1) rad = 1;
+            MorphologicalTransforms.Opening2D(result, width, height, rad);
+        }
+
+        BitMatrix matrix = new BitMatrix(width, height);
+        for (int y = 0; y < height; y++) { // for each scanline
+            int yOff = y * width;
+            for (int x = 0; x < width; x++) {
+                if (result[yOff + x] < 0x0F) matrix.set(x,y);
             }
         }
 
@@ -238,11 +251,9 @@ public class UnsharpMaskBinarizer extends Binarizer {
         LuminanceSource source = getLuminanceSource();
         int width = source.getWidth();
         int height = source.getHeight();
-        BitMatrix matrix = new BitMatrix(width, height);
 
         byte[] image = source.getMatrix();
-
-        if (morph) MorphologicalTransforms.Opening2D(image, width, height, scale / 2);
+        byte[] result = new byte[image.length];
 
         if (colLuminances == null || colLuminances.length < image.length) colLuminances = new int[image.length+32];
 
@@ -300,7 +311,8 @@ public class UnsharpMaskBinarizer extends Binarizer {
                 if (target < LOWER_LIMIT) target = LOWER_LIMIT;
 
                 // Decide what side of the threshold we are on
-                if (actual > target) matrix.set(x,y);
+                //if (actual > target) matrix.set(x,y);
+                result[yOff + x] = (actual > target) ? (byte) 0x00 : 0x0F;
 
                 // update running average
                 int xr = Math.min(x + radius, right);
@@ -309,6 +321,20 @@ public class UnsharpMaskBinarizer extends Binarizer {
                 int outgoing = colLuminances[yOff + xl];
 
                 sum += incoming - outgoing;
+            }
+        }
+
+        if (morph) {
+            int rad = scale - 2;
+            if (rad < 1) rad = 1;
+            MorphologicalTransforms.Opening2D(result, width, height, rad);
+        }
+
+        BitMatrix matrix = new BitMatrix(width, height);
+        for (int y = 0; y < height; y++) { // for each scanline
+            int yOff = y * width;
+            for (int x = 0; x < width; x++) {
+                if (result[yOff + x] < 0x0F) matrix.set(x,y);
             }
         }
 
