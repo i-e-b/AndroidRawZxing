@@ -101,6 +101,7 @@ public class BarcodeScanner {
     }
 
     private static boolean invert = false;
+    private static boolean morph = false;
     private static int testScale = SCALE_MAX;
     private static int testExposure = EXPOSURE_MAX;
     private Bitmap prevLumBitmap = null;
@@ -133,19 +134,22 @@ public class BarcodeScanner {
         // Set the parameters beforehand, so the preview is accurate
         invert = !invert; // Alternate inverted and not
         if (invert) { // after trying inverted, change parameters
-            testExposure -= 2; // cycle through exposure levels
-            if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
-                testExposure = EXPOSURE_MAX; // ...reset...
-                testScale -= 1;              // ...and cycle the scale
+            morph = !morph; // try running a "morphological opening" to fix scratches
+            if (morph) {
+                testExposure -= 2; // cycle through exposure levels
+                if (testExposure < EXPOSURE_MIN) { // when full exposure range has been tested...
+                    testExposure = EXPOSURE_MAX; // ...reset...
+                    testScale -= 1;              // ...and cycle the scale
 
-                if (testScale < SCALE_MIN) { // when scale has been cycled...
-                    testScale = SCALE_MAX;   // ...reset
+                    if (testScale < SCALE_MIN) { // when scale has been cycled...
+                        testScale = SCALE_MAX;   // ...reset
+                    }
                 }
             }
         }
 
         // UMB thresholder
-        return new UnsharpMaskBinarizer(lum, invert, testScale, testExposure);
+        return new UnsharpMaskBinarizer(lum, invert, testScale, testExposure, morph);
     }
 
     private void onScannerError(String msg) {

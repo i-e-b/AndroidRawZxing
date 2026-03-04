@@ -7,6 +7,7 @@ import com.google.zxing.common.BitMatrix;
 
 public class UnsharpMaskBinarizer extends Binarizer {
     private final boolean invert;
+    private final boolean morph;
     private final int scale;
     private final int bias;
 
@@ -14,15 +15,18 @@ public class UnsharpMaskBinarizer extends Binarizer {
      * Create a running-threshold binarizer
      *
      * @param source Luminance image source
+     * @param invert if true, the image will be inverted
      * @param scale Scale of running average. Adjust to pick out different detail levels.
      *              Range 1..8 inclusive. 5 or 6 are good defaults.
      * @param exposure Negative for lighter image, positive for darker. Zero is no bias. Between -16 and 16 seem to work in most cases.
+     * @param morph if true, a speckle/scratch transform will be run for 2D matrices
      */
-    protected UnsharpMaskBinarizer(LuminanceSource source, boolean invert, int scale, int exposure) {
+    protected UnsharpMaskBinarizer(LuminanceSource source, boolean invert, int scale, int exposure, boolean morph) {
         super(source);
         this.invert = invert;
         this.scale = scale;
         this.bias = exposure;
+        this.morph = morph;
     }
 
     private static byte[] rowLuminances = null;
@@ -157,6 +161,8 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
         byte[] image = source.getMatrix();
 
+        if (morph) MorphologicalTransforms.Opening2D(image, width, height, scale / 2);
+
         if (colLuminances == null || colLuminances.length < image.length) colLuminances = new int[image.length+32];
 
         int radius = 1 << scale;
@@ -236,6 +242,8 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
         byte[] image = source.getMatrix();
 
+        if (morph) MorphologicalTransforms.Opening2D(image, width, height, scale / 2);
+
         if (colLuminances == null || colLuminances.length < image.length) colLuminances = new int[image.length+32];
 
         int radius = 1 << scale;
@@ -309,6 +317,6 @@ public class UnsharpMaskBinarizer extends Binarizer {
 
     @Override
     public Binarizer createBinarizer(LuminanceSource source) {
-        return new UnsharpMaskBinarizer(source, false, 5, 0);
+        return new UnsharpMaskBinarizer(source, false, 5, 0, false);
     }
 }
