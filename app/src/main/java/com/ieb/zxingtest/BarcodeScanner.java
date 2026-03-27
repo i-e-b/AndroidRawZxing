@@ -16,6 +16,8 @@ import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.PresetListReader;
 import com.google.zxing.Result;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 /** @noinspection unused*/
@@ -57,6 +59,13 @@ public class BarcodeScanner {
         camControl = new CameraFeedController(act, 1024, 768, 32, 256, this::updateReading, this::onScannerError);
     }
 
+
+    /** Set the capture plane returned. Defaults to the Y (luminance) plane.
+     * Plane 0=Y (Luminance); Plane 1=U (Blue/Yellow); Plane 2=V (Red/Green) */
+    public void setCapturePlane(int plane){
+        camControl.setCapturePlane(plane);
+    }
+
     /** Start reading camera and scanning for barcodes */
     public void start() {
         camControl.onResume();
@@ -83,7 +92,7 @@ public class BarcodeScanner {
         diagnosticOutput = thresholdViewer;
     }
 
-    /** If set to `true`, the diagnostic view will be update with every captured frame.
+    /** If set to `true`, the diagnostic view will be updated with every captured frame.
      * If set to `false`, the diagnostic view is only updated when a barcode is captured.
      * Default is `false`*/
     public void setShowConstantDiagnostics(boolean setting) {
@@ -185,7 +194,7 @@ public class BarcodeScanner {
             if (previewOutput != null) updateVideoPreview(image.image, result, image.width, image.height);
 
             if (constantDiagnostics || result != null) {
-                // Show a snap-shot of the thresholded image that worked
+                // Show a snapshot of the thresholded image that worked
                 if (diagnosticOutput != null) updateThresholdPreview(binMap, invert);
             }
 
@@ -231,7 +240,10 @@ public class BarcodeScanner {
         if (lumTemp == null || lumTemp.length < lumMap.length) lumTemp = new int[lumMap.length];
         var colorInts = lumTemp;
 
-        for (int i = 0; i < lumMap.length; i++) {
+        var yExtent = width*height; // just the Y plane?
+        if (yExtent > lumMap.length) yExtent = lumMap.length;
+
+        for (int i = 0; i < yExtent; i++) {
             var sample = lumMap[i] & 0xFF;
             var color = 0x00_01_01_01 * sample;
             colorInts[i] = 0xFF000000 + color;
@@ -272,18 +284,26 @@ public class BarcodeScanner {
         }
     }
 
+
+
+    private final List<Bitmap> waitingToRecycle = new ArrayList<>();
+
     /**
      * Copy "ColorInt" pixel to a bitmap. The bitmap is re-created if null or the wrong size
      */
     private Bitmap copyColorIntsToBitmap(Bitmap target, int[] pixels, int width, int height) {
         Bitmap.Config config = Bitmap.Config.ARGB_8888;
 
+        if (waitingToRecycle.size() > 1) { // This prevents Android crashing if it tries to draw the old bitmap
+            waitingToRecycle.remove(0).recycle();
+        }
+
         if (target == null) {
             var tmp = Bitmap.createBitmap(pixels, width, height, config);
             target = tmp.copy(Bitmap.Config.ARGB_8888, true);
             tmp.recycle();
         } else if (differentSize(target, width, height)) {
-            target.recycle();
+            waitingToRecycle.add(target);
             var tmp = Bitmap.createBitmap(pixels, width, height, config);
             target = tmp.copy(Bitmap.Config.ARGB_8888, true);
             tmp.recycle();

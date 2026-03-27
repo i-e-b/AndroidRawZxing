@@ -35,6 +35,8 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     private final Consumer<String> errorTrigger;
     private final int insetX;
     private final int insetY;
+
+    private volatile int capturePlane = 0;
     ImageReader imageReader;
 
     /**
@@ -66,6 +68,13 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
 
         this.errorTrigger = errorTrigger;
         this.updateTrigger = updateTrigger;
+    }
+
+    /** Set the capture plane returned. Defaults to the Y (luminance) plane.
+     * Plane 0=Y (Luminance); Plane 1=U (Blue/Yellow); Plane 2=V (Red/Green) */
+    public void setCapturePlane(int plane){
+        if (plane < 0 || plane > 2) return;
+        capturePlane = plane;
     }
 
     private static final int REQUEST_CAMERA_PERMISSION = 1;
@@ -335,7 +344,6 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
         }
     }
 
-
     /**
      * Creates a new {@link CameraCaptureSession} for camera preview.
      */
@@ -345,7 +353,9 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                 // NOTE: ImageFormat.PRIVATE always works, but refuses to supply data.
                 //       Docs claim that ImageFormat.JPEG always works, but this is not true.
                 // ImageFormat.YUV_420_888 seems to be most reliable.
-                imageReader = ImageReader.newInstance(CAPTURE_WIDTH, CAPTURE_HEIGHT, ImageFormat.YUV_420_888, 1);
+                imageReader = ImageReader.newInstance(CAPTURE_WIDTH, CAPTURE_HEIGHT,
+                    ImageFormat.YUV_420_888,
+                    1);
                 imageReader.setOnImageAvailableListener(this, null);
             }
 
@@ -371,7 +381,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                             // When the session is ready, we start displaying the preview.
                             mCaptureSession = cameraCaptureSession;
                             try {
-                                // Auto focus should be continuous for camera preview.
+                                // Autofocus should be continuous for camera preview.
                                 mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
                                 // Flash is automatically enabled when necessary.
@@ -408,108 +418,335 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
 
     private byte[] imageTmp;
     private byte[] imageSrc;
-    /** read luminance into a byte array, correcting for relative sensor rotation */
-    private ByteImage imageToBytes(ImageReader reader) {
-        try (Image image = reader.acquireNextImage()) {
-            //try (Image image = reader.acquireLatestImage()) {
-            if (image == null) return null;
 
+    /** Pick one of the planes out of a YUV image.
+     * This assumes a 4:2:0 layout, but will handle interleaved or planar UV data */
+    private ByteImage imageToBytes_normalised(ImageReader reader, int plane){
+        //try (Image image = reader.acquireLatestImage()) { //<- this doesn't seem to improve lag
+        try (Image image = reader.acquireNextImage()) {
             var planes = image.getPlanes();
 
-            if (planes == null || planes.length < 1) {
-                Log.w(TAG, "Invalid image planes");
-                return null;
+            if (plane == 0) return imageToBytes_YPlane(planes, image);
+
+            // For some reason, Android still gives us 3 planes even when there are only really 2.
+            // The third plane seems to be the second with a one byte offset?
+            // So we check the stride on the second plane.
+            if (planes[1].getPixelStride() > 1) {
+                return imageToBytes_UvInterleaved(planes, image, plane - 1);
             }
 
-            // Read plane into temp buffer
-            var yPlane = planes[0];
-            var buffer = yPlane.getBuffer();
-            var bufferSize = buffer.remaining();
-            if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
-            var data = imageTmp;
-            buffer.get(data);
-
-            // Get parameters of the plane
-            var srcWidth = image.getWidth();
-            var srcHeight = image.getHeight();
-            var dataWidth = yPlane.getRowStride();
-
-            // Get parameter of output
-            var rot = mSensorOrientation;
-            var dstWidth = srcWidth;
-            var dstHeight = srcHeight;
-            if (rot == 90 || rot == 270){
-                //noinspection SuspiciousNameCombination
-                dstWidth = srcHeight;
-                //noinspection SuspiciousNameCombination
-                dstHeight = srcWidth;
-            }
-            dstWidth -= insetX * 2;
-            dstHeight -= insetY * 2;
-
-            // Ensure the final output is ready
-            var requiredSize = srcWidth * srcHeight;
-            if (imageSrc == null || imageSrc.length < requiredSize) {imageSrc = new byte[requiredSize];}
-            var pkg = new ByteImage();
-            pkg.image = imageSrc;
-            pkg.width = dstWidth;
-            pkg.height = dstHeight;
-
-            // Copy from Y-plane into final image,
-            // taking into account margins and rotations
-
-            if (rot == 0){ // no flips
-                int outp = 0;
-                for (int y = 0; y < dstHeight; y++) {
-                    var yOff = dataWidth * (y+ insetY);
-
-                    // Copy a scan line
-                    for (int x = 0; x < dstWidth; x++) {
-                        var idx = yOff + x + insetX;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 180){ // Flip horz and vert
-                int outp = 0;
-                for (int y = dstHeight-1; y >= 0; y--) {
-                    var yOff = dataWidth * (y+ insetY);
-
-                    // Copy a scan line
-                    for (int x = dstWidth - 1; x >= 0; x--) {
-                        var idx = yOff + x + insetX;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 90) { // copy columns into rows, and flip y
-                int outp = 0;
-                for (int x = 0; x < dstHeight; x++) {
-
-                    // Copy a scan line
-                    for (int y = dstWidth-1; y >= 0; y--) {
-                        var yy = y + insetX;
-                        var yOff = dataWidth * (yy);
-                        var idx = yOff + x + insetY;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            } else if (rot == 270) { // copy columns into rows
-                int outp = 0;
-                for (int x = 0; x < dstHeight; x++) {
-
-                    // Copy a scan line
-                    for (int y = 0; y < dstWidth; y++) {
-                        var yOff = dataWidth * (y + insetX);
-                        var idx = yOff + x + insetY;
-                        imageSrc[outp++] = data[idx];
-                    }
-                }
-            }
-
-            return pkg;
-        } catch (Exception e){
+            return imageToBytes_UvSeparated(planes, image, plane - 1);
+        } catch (Exception e) {
             Log.e(TAG, "Failed to read camera capture: " + e);
             return null;
         }
+    }
+
+    /** read luminance into a byte array, correcting for relative sensor rotation */
+    private ByteImage imageToBytes_YPlane(Image.Plane[] planes, Image image) {
+        if (planes == null || planes.length < 1) {
+            Log.w(TAG, "Invalid image planes");
+            return null;
+        }
+
+        // Read plane into temp buffer
+        var yPlane = planes[0];
+        var buffer = yPlane.getBuffer();
+        var bufferSize = buffer.remaining();
+        if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
+        var data = imageTmp;
+        buffer.get(data);
+
+        // Get parameters of the plane
+        var srcWidth = image.getWidth();
+        var srcHeight = image.getHeight();
+        var dataWidth = yPlane.getRowStride();
+
+        // Get parameter of output
+        var rot = mSensorOrientation;
+        var dstWidth = srcWidth;
+        var dstHeight = srcHeight;
+        if (rot == 90 || rot == 270) {
+            //noinspection SuspiciousNameCombination
+            dstWidth = srcHeight;
+            //noinspection SuspiciousNameCombination
+            dstHeight = srcWidth;
+        }
+        dstWidth -= insetX * 2;
+        dstHeight -= insetY * 2;
+
+        // Ensure the final output is ready
+        var requiredSize = srcWidth * srcHeight;
+        if (imageSrc == null || imageSrc.length < requiredSize) {
+            imageSrc = new byte[requiredSize];
+        }
+        var pkg = new ByteImage();
+        pkg.image = imageSrc;
+        pkg.width = dstWidth;
+        pkg.height = dstHeight;
+
+        // Copy from Y-plane into final image,
+        // taking into account margins and rotations
+
+        if (rot == 0) { // no flips
+            int outp = 0;
+            for (int y = 0; y < dstHeight; y++) {
+                var yOff = dataWidth * (y + insetY);
+
+                // Copy a scan line
+                for (int x = 0; x < dstWidth; x++) {
+                    var idx = yOff + x + insetX;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 180) { // Flip horz and vert
+            int outp = 0;
+            for (int y = dstHeight - 1; y >= 0; y--) {
+                var yOff = dataWidth * (y + insetY);
+
+                // Copy a scan line
+                for (int x = dstWidth - 1; x >= 0; x--) {
+                    var idx = yOff + x + insetX;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 90) { // copy columns into rows, and flip y
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = dstWidth - 1; y >= 0; y--) {
+                    var yy = y + insetX;
+                    var yOff = dataWidth * (yy);
+                    var idx = yOff + x + insetY;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 270) { // copy columns into rows
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = 0; y < dstWidth; y++) {
+                    var yOff = dataWidth * (y + insetX);
+                    var idx = yOff + x + insetY;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        }
+
+        return pkg;
+    }
+
+    /** read colors into a byte array, correcting for relative sensor rotation */
+    private ByteImage imageToBytes_UvInterleaved(Image.Plane[] planes, Image image, int chroma) {
+        if (planes == null || planes.length < 2) {
+            Log.w(TAG, "Invalid image plane selection");
+            return null;
+        }
+
+        // Read plane into temp buffer
+        var plane = planes[1];
+        var buffer = plane.getBuffer();
+        var bufferSize = buffer.remaining();
+        if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
+        var data = imageTmp;
+        buffer.get(data, 0, bufferSize);
+
+        // Pick only U or V by copying
+        if (chroma == 0) {
+            for (int i = 1; i < bufferSize; i += 2) {
+                data[i] = data[i - 1]; // Blue/Yellow
+            }
+        } else {
+            for (int i = 0; i < bufferSize - 1; i += 2) {
+                data[i] = data[i + 1]; // Red/Green
+            }
+        }
+
+        // Get parameters of the plane
+        var srcWidth = image.getWidth();
+        var srcHeight = image.getHeight();
+        var dataWidth = plane.getRowStride();
+
+        // Get parameter of output
+        var rot = mSensorOrientation;
+        var dstWidth = srcWidth;
+        var dstHeight = srcHeight;
+        if (rot == 90 || rot == 270) {
+            //noinspection SuspiciousNameCombination
+            dstWidth = srcHeight;
+            //noinspection SuspiciousNameCombination
+            dstHeight = srcWidth;
+        }
+
+        var insetX2 = insetX / 2;
+        var insetY2 = insetY / 2;
+
+        dstWidth -= insetX2 * 2;
+        dstHeight -= insetY2 * 2;
+
+        // Ensure the final output is ready
+        var requiredSize = srcWidth * srcHeight;
+        if (imageSrc == null || imageSrc.length < requiredSize) {
+            imageSrc = new byte[requiredSize];
+        }
+        var pkg = new ByteImage();
+        pkg.image = imageSrc;
+        pkg.width = dstWidth;
+        pkg.height = dstHeight;
+
+        // Copy from Y-plane into final image,
+        // taking into account margins and rotations
+
+        if (rot == 0) { // no flips
+            int outp = 0;
+            for (int y = 0; y < dstHeight; y++) {
+                var yOff = dataWidth * ((y >> 1) + insetY2);
+
+                // Copy a scan line
+                for (int x = 0; x < dstWidth; x++) {
+                    var idx = yOff + (x) + insetX2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 180) { // Flip horz and vert
+            int outp = 0;
+            for (int y = dstHeight - 1; y >= 0; y--) {
+                var yOff = dataWidth * ((y >> 1) + insetY2);
+
+                // Copy a scan line
+                for (int x = dstWidth - 1; x >= 0; x--) {
+                    var idx = yOff + (x) + insetX2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 90) { // copy columns into rows, and flip y
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = dstWidth - 1; y >= 0; y--) {
+                    var yy = (y >> 1) + insetX2;
+                    var yOff = dataWidth * (yy);
+                    var idx = yOff + (x) + insetY2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 270) { // copy columns into rows
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = 0; y < dstWidth; y++) {
+                    var yOff = dataWidth * ((y >> 1) + insetX2);
+                    var idx = yOff + (x) + insetY2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        }
+
+        return pkg;
+    }
+
+    /** read colors into a byte array, correcting for relative sensor rotation */
+    private ByteImage imageToBytes_UvSeparated(Image.Plane[] planes, Image image, int chroma) {
+        if (planes == null || planes.length < chroma) {
+            Log.w(TAG, "Invalid image plane selection");
+            return null;
+        }
+
+        // Read plane into temp buffer
+        var plane = planes[chroma + 1]; // pick U or V by plane
+        var buffer = plane.getBuffer();
+        var bufferSize = buffer.remaining();
+        if (imageTmp == null || imageTmp.length < bufferSize) imageTmp = new byte[bufferSize];
+        var data = imageTmp;
+        buffer.get(data, 0, bufferSize);
+
+        // Get parameters of the plane
+        var srcWidth = image.getWidth();
+        var srcHeight = image.getHeight();
+        var dataWidth = plane.getRowStride();
+
+        // Get parameter of output
+        var rot = mSensorOrientation;
+        var dstWidth = srcWidth;
+        var dstHeight = srcHeight;
+        if (rot == 90 || rot == 270) {
+            //noinspection SuspiciousNameCombination
+            dstWidth = srcHeight;
+            //noinspection SuspiciousNameCombination
+            dstHeight = srcWidth;
+        }
+
+        var insetX2 = insetX / 2;
+        var insetY2 = insetY / 2;
+
+        dstWidth -= insetX2 * 2;
+        dstHeight -= insetY2 * 2;
+
+        // Ensure the final output is ready
+        var requiredSize = srcWidth * srcHeight;
+        if (imageSrc == null || imageSrc.length < requiredSize) {
+            imageSrc = new byte[requiredSize];
+        }
+        var pkg = new ByteImage();
+        pkg.image = imageSrc;
+        pkg.width = dstWidth;
+        pkg.height = dstHeight;
+
+        // Copy from Y-plane into final image,
+        // taking into account margins and rotations
+
+        if (rot == 0) { // no flips
+            int outp = 0;
+            for (int y = 0; y < dstHeight; y++) {
+                var yOff = dataWidth * ((y >> 1) + insetY2);
+
+                // Copy a scan line
+                for (int x = 0; x < dstWidth; x++) {
+                    var idx = yOff + (x>>1) + insetX2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 180) { // Flip horz and vert
+            int outp = 0;
+            for (int y = dstHeight - 1; y >= 0; y--) {
+                var yOff = dataWidth * ((y >> 1) + insetY2);
+
+                // Copy a scan line
+                for (int x = dstWidth - 1; x >= 0; x--) {
+                    var idx = yOff + (x>>1) + insetX2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 90) { // copy columns into rows, and flip y
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = dstWidth - 1; y >= 0; y--) {
+                    var yy = (y >> 1) + insetX2;
+                    var yOff = dataWidth * (yy);
+                    var idx = yOff + (x>>1) + insetY2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        } else if (rot == 270) { // copy columns into rows
+            int outp = 0;
+            for (int x = 0; x < dstHeight; x++) {
+
+                // Copy a scan line
+                for (int y = 0; y < dstWidth; y++) {
+                    var yOff = dataWidth * ((y >> 1) + insetX2);
+                    var idx = yOff + (x>>1) + insetY2;
+                    imageSrc[outp++] = data[idx];
+                }
+            }
+        }
+
+        return pkg;
     }
 
     private volatile boolean updateActive = false;
@@ -520,7 +757,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
 
         try {
             updateActive = true;
-            var image = imageToBytes(reader);
+            var image = imageToBytes_normalised(reader, capturePlane);
             if (image != null) updateTrigger.accept(image);
         } finally {
             updateActive = false;
