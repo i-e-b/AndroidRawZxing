@@ -355,7 +355,7 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
                 // ImageFormat.YUV_420_888 seems to be most reliable.
                 imageReader = ImageReader.newInstance(CAPTURE_WIDTH, CAPTURE_HEIGHT,
                     ImageFormat.YUV_420_888,
-                    1);
+                    2); // 2 images to allow us to scan through the capture.
                 imageReader.setOnImageAvailableListener(this, null);
             }
 
@@ -422,8 +422,24 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
     /** Pick one of the planes out of a YUV image.
      * This assumes a 4:2:0 layout, but will handle interleaved or planar UV data */
     private ByteImage imageToBytes_normalised(ImageReader reader, int plane){
-        //try (Image image = reader.acquireLatestImage()) { //<- this doesn't seem to improve lag
-        try (Image image = reader.acquireNextImage()) {
+        Image image = null;
+        try {
+            // This does what "reader.acquireLatestImage" should do, to reduce visual latency
+            // Requires `ImageReader.newInstance` to have at least 2 in `maxImages`
+            while(true){
+                Image next = reader.acquireNextImage();
+
+                if (next == null) break;
+                if (image != null) image.close();
+                image = next;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read camera capture: " + e);
+            return null;
+        }
+        if (image == null) return null; // no frames available
+
+        try { //<- this doesn't seem to improve lag
             var planes = image.getPlanes();
 
             if (plane == 0) return imageToBytes_YPlane(planes, image);
@@ -437,8 +453,10 @@ public class CameraFeedController implements ImageReader.OnImageAvailableListene
 
             return imageToBytes_UvSeparated(planes, image, plane - 1);
         } catch (Exception e) {
-            Log.e(TAG, "Failed to read camera capture: " + e);
+            Log.e(TAG, "Failed to process camera frame: " + e);
             return null;
+        } finally {
+            image.close();
         }
     }
 
